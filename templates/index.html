@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>橘子量化 · 量化超短线</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+
+    :root {
+      --bg: #080808;
+      --card: #111;
+      --border: #1f1f1f;
+      --text: #d4cfc4;
+      --sub: #999;
+      --amber: #e8a020;
+      --green: #3aaf7c;
+      --red: #d94a5d;
+      --blue: #5b8cce;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: var(--bg);
+      font-family: 'Noto Sans SC', 'JetBrains Mono', sans-serif;
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    body.dormant::after {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: repeating-linear-gradient(0deg, transparent, transparent 4px, rgba(0, 0, 0, 0.08) 4px, rgba(0, 0, 0, 0.08) 8px);
+      pointer-events: none;
+      z-index: 999;
+      animation: scan 12s linear infinite;
+    }
+
+    @keyframes scan {
+      0% { transform: translateY(-100%); }
+      100% { transform: translateY(100%); }
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      transition: all 0.2s;
+    }
+    .card:hover { border-color: #2a2a2a; }
+
+    .btn-exec {
+      background: linear-gradient(180deg, #1c1808, #0e0c00);
+      border: 1.5px solid var(--amber);
+      color: var(--amber);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.12em;
+      transition: all 0.3s;
+      cursor: pointer;
+      font-size: 0.9rem;
+      padding: 12px 32px;
+      border-radius: 4px;
+    }
+    .btn-exec:hover {
+      border-color: #ffc940;
+      color: #ffc940;
+      box-shadow: 0 0 35px rgba(232, 160, 32, 0.4);
+    }
+    .btn-exec:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .btn-sm {
+      padding: 6px 16px;
+      font-size: 0.75rem;
+    }
+
+    .dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .dot.online { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .dot.closed { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-track { background: #000; }
+    ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
+
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border: 1px solid rgba(232, 160, 32, 0.2);
+      color: var(--amber);
+      font-size: 0.7rem;
+      border-radius: 3px;
+    }
+
+    .tab-btn {
+      padding: 10px 22px;
+      font-size: 0.9rem;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: var(--sub);
+      background: none;
+    }
+    .tab-btn.active {
+      color: var(--amber);
+      border-bottom-color: var(--amber);
+    }
+
+    .heat-up { background: rgba(58, 175, 124, 0.25); color: #3aaf7c; }
+    .heat-up2 { background: rgba(58, 175, 124, 0.15); color: #5ccf9a; }
+    .heat-down { background: rgba(217, 74, 93, 0.25); color: #d94a5d; }
+    .heat-down2 { background: rgba(217, 74, 93, 0.15); color: #e87080; }
+
+    .yiming-mini {
+      background: linear-gradient(135deg, #111, #0d0d0d);
+      border: 1px solid #1a1a1a;
+      font-family: 'Noto Serif SC', serif;
+      font-size: 0.85rem;
+    }
+
+    .sell-box {
+      background: rgba(232, 160, 32, 0.06);
+      border: 1px solid rgba(232, 160, 32, 0.25);
+      padding: 10px 14px;
+      font-size: 0.85rem;
+    }
+
+    .news-item {
+      border-bottom: 1px solid #151515;
+      padding: 10px 0;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .news-item:hover { background: rgba(232, 160, 32, 0.04); }
+
+    .news-source {
+      display: inline-block;
+      padding: 2px 8px;
+      font-size: 0.6rem;
+      border-radius: 2px;
+    }
+    .news-source.cctv { background: rgba(200, 40, 40, 0.2); color: #e05050; }
+    .news-source.express { background: rgba(232, 160, 32, 0.2); color: var(--amber); }
+
+    .news-content {
+      font-size: 0.7rem;
+      color: #999;
+      margin-top: 4px;
+      line-height: 1.4;
+      max-height: 60px;
+      overflow: hidden;
+      transition: max-height 0.3s;
+    }
+    .news-content.expanded { max-height: 500px; }
+
+    .news-sectors { font-size: 0.7rem; margin-top: 3px; }
+    .bullish { color: #3aaf7c; }
+    .bearish { color: #d94a5d; }
+
+    /* 小狗 */
+    .pet-container {
+      position: fixed;
+      z-index: 10000;
+      image-rendering: pixelated;
+      transition: left 0.05s linear, top 0.05s linear;
+    }
+    .pet-canvas { display: block; width: 64px; height: 64px; }
+
+    .pet-bubble {
+      position: absolute;
+      top: -42px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #d4cfc4;
+      font-size: 0.7rem;
+      padding: 6px 12px;
+      border-radius: 10px;
+      white-space: nowrap;
+      font-family: 'Noto Sans SC', sans-serif;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .pet-container:hover .pet-bubble { opacity: 1; }
+
+    /* 狗窝 */
+    .doghouse {
+      position: fixed;
+      z-index: 10001;
+      cursor: pointer;
+      image-rendering: pixelated;
+      left: 20px;
+      bottom: 20px;
+    }
+    .doghouse-canvas { width: 80px; height: 64px; display: block; }
+    .doghouse:hover { transform: scale(1.08); filter: brightness(1.2); }
+
+    /* 移动端适配 */
+    @media (max-width: 768px) {
+      .flex-col-mobile { flex-direction: column !important; }
+      .w-1-5-mobile { width: 100% !important; }
+      .w-3-5-mobile { width: 100% !important; }
+      .hidden-mobile { display: none !important; }
+      .text-sm-mobile { font-size: 0.8rem !important; }
+      .p-2-mobile { padding: 0.5rem !important; }
+      .doghouse, .pet-container { display: none; }
+      .tab-btn { padding: 8px 14px; font-size: 0.75rem; }
+    }
+
+    /* 状态指示器闪烁 */
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .auto-scan-active { animation: pulse-dot 2s ease-in-out infinite; }
+  </style>
+</head>
+<body :class="{ 'dormant': status === 'weekend_rest' }">
+  <div id="app" class="min-h-screen relative">
+
+    <!-- ==================== 顶部状态栏 ==================== -->
+    <div class="border-b border-[#1a1a1a] bg-[#0a0a0a] px-4 py-3 flex items-center justify-between text-sm flex-wrap gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[#e8a020] font-bold tracking-wider text-base">🍊 橘子量化 v3.1</span>
+        <span class="text-[#2a2a2a] hidden-mobile">|</span>
+        <span class="text-[#e8a020] font-bold tracking-wider hidden-mobile">量化超短线</span>
+        <span class="text-[#777] hidden-mobile">全A扫描</span>
+        <span class="text-[#3aaf7c] font-bold tracking-wider ml-1 text-xs hidden-mobile">尾盘买入 · 早盘卖出 · 坚决执行</span>
+        <span v-if="autoScanEnabled" class="text-[#3aaf7c] text-xs auto-scan-active">🕑 定时扫描已开启 (14:30自动执行)</span>
+      </div>
+      <div class="flex items-center gap-3 text-xs">
+        <button @click="toggleAutoScan" :class="autoScanEnabled ? 'text-[#3aaf7c]' : 'text-[#777]'" class="hover:text-[#e8a020] transition-colors">
+          [[ autoScanEnabled ? '🕑 定时开' : '⏸ 定时关' ]]
+        </button>
+        <span class="text-[#777]">[[ currentTime ]]</span>
+        <span class="text-[#555]">[[ currentDate ]]</span>
+      </div>
+    </div>
+
+    <!-- ==================== 标签页 ==================== -->
+    <div class="border-b border-[#1a1a1a] bg-[#0a0a0a] px-4 flex gap-1 overflow-x-auto">
+      <button class="tab-btn" :class="{ active: activeTab === 'trade' }" @click="activeTab = 'trade'">📊 超短扫描</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'positions' }" @click="activeTab = 'positions'; fetchStats()">💼 持仓管理</button>
+      <button class="tab-btn" :class="{ active: activeTab === 'diary' }" @click="activeTab = 'diary'; loadDiary()">📝 复盘日记</button>
+    </div>
+
+    <!-- ==================== Tab 1: 超短扫描（三栏布局） ==================== -->
+    <div v-show="activeTab === 'trade'" class="flex gap-3 p-3 max-w-[1800px] mx-auto flex-col-mobile" style="min-height: calc(100vh - 160px);">
+
+      <!-- 左栏 1/5 -->
+      <div class="w-1/5 flex-shrink-0 space-y-2 w-1-5-mobile">
+        <!-- 易命二十八术 -->
+        <div class="yiming-mini p-3 rounded">
+          <div class="text-xs text-[#e8a020] tracking-wider mb-1">📿 今日一术 · 第[[ yiming.id ]]术</div>
+          <div class="text-[#d4cfc4] leading-relaxed text-sm mb-1">「[[ yiming.text ]]」</div>
+          <div class="text-xs text-[#777]">📖 [[ yiming.translation ]]</div>
+          <div class="text-xs text-[#e8a020] mt-0.5">🎯 [[ yiming.summary ]]</div>
+        </div>
+
+        <!-- 板块热力图 -->
+        <div class="card p-3 rounded">
+          <div class="text-xs text-[#777] tracking-wider mb-1 border-b border-[#1a1a1a] pb-1">🔥 板块热力图</div>
+          <div class="flex flex-wrap gap-1 max-h-36 overflow-y-auto">
+            <span v-for="h in heatmapData" :key="h.板块名称" class="text-[10px] px-1.5 py-0.5 font-mono rounded" :class="heatClass(h.涨跌幅)">
+              [[ h.板块名称 ]] [[ h.涨跌幅 > 0 ? '+' : '' ]][[ h.涨跌幅 ]]%
+            </span>
+          </div>
+        </div>
+
+        <!-- 主力资金流向 -->
+        <div class="card p-3 rounded">
+          <div class="text-xs text-[#777] tracking-wider mb-1 border-b border-[#1a1a1a] pb-1">💰 主力资金 ([[ moneyflowDate ]])</div>
+          <div class="text-xs text-[#3aaf7c] mb-1 font-bold">📈 流入 TOP5</div>
+          <div v-for="m in moneyflowIn.slice(0, 5)" :key="'in' + m.板块名称" class="text-[11px] flex justify-between py-0.5 border-b border-[#0d0d0d]">
+            <span>[[ m.板块名称 ]]</span>
+            <span class="text-[#3aaf7c] font-mono">+[[ fv2(m.主力净流入) ]]</span>
+          </div>
+          <div class="text-xs text-[#d94a5d] mt-2 mb-1 font-bold">📉 流出 TOP5</div>
+          <div v-for="m in moneyflowOut.slice(0, 5)" :key="'out' + m.板块名称" class="text-[11px] flex justify-between py-0.5 border-b border-[#0d0d0d]">
+            <span>[[ m.板块名称 ]]</span>
+            <span class="text-[#d94a5d] font-mono">[[ fv2(m.主力净流入) ]]</span>
+          </div>
+        </div>
+
+        <!-- 小橘子提醒 -->
+        <div class="card p-3 rounded">
+          <div class="text-xs text-[#777] mb-1">🐶 小橘子提醒</div>
+          <div class="text-sm text-[#d4cfc4]">[[ petMessage ]]</div>
+        </div>
+      </div>
+
+      <!-- 中栏 3/5 -->
+      <div class="w-3/5 flex-shrink-0 space-y-2 w-3-5-mobile">
+        <!-- 扫描按钮 -->
+        <div class="flex justify-center">
+          <button @click="executeScan" class="btn-exec tracking-wider text-base">
+            <span v-if="loading">⏳ 正在多线程扫描全A股...</span>
+            <span v-else>▶ 执行超短扫描</span>
+          </button>
+        </div>
+
+        <!-- 卖出检查 -->
+        <div class="card p-3 rounded">
+          <div class="text-sm text-[#e8a020] mb-2 font-bold">📤 次日卖出检查（输入昨日买入的股票）</div>
+          <div class="flex gap-2 flex-wrap items-end">
+            <div>
+              <label class="text-[10px] text-[#777] block mb-0.5">股票代码</label>
+              <input v-model="sellCheckCode" placeholder="如 600519" class="bg-[#0a0a0a] border border-[#1a1a1a] text-[#d4cfc4] px-3 py-2 text-sm w-28 rounded focus:outline-none focus:border-[#e8a020]">
+            </div>
+            <div>
+              <label class="text-[10px] text-[#777] block mb-0.5">买入价格</label>
+              <input v-model="sellCheckPrice" placeholder="如 1680.00" class="bg-[#0a0a0a] border border-[#1a1a1a] text-[#d4cfc4] px-3 py-2 text-sm w-28 rounded focus:outline-none focus:border-[#e8a020]">
+            </div>
+            <button @click="checkSell" class="btn-exec btn-sm rounded">检查卖出</button>
+          </div>
+          <div v-if="sellResult" class="mt-3 p-3 rounded text-sm" :class="sellResult.should_sell ? 'bg-[#d94a5d]/10 border border-[#d94a5d]/30 text-[#d94a5d]' : 'bg-[#3aaf7c]/10 border border-[#3aaf7c]/30 text-[#3aaf7c]'">
+            <div class="font-bold text-base mb-1">[[ sellResult.advice ]]</div>
+            <div v-for="(r, ri) in sellResult.reasons" :key="ri" class="ml-1">• [[ r ]]</div>
+            <div class="mt-2 text-[#777] text-xs">
+              买入价：¥[[ sellResult.buy_price ]] → 现价：¥[[ sellResult.current_price ]]
+              ([[ sellResult.profit_pct > 0 ? '+' : '' ]][[ sellResult.profit_pct ]]%)
+              | RSI: [[ sellResult.rsi ]]
+            </div>
+          </div>
+        </div>
+
+        <!-- 消息 -->
+        <div v-if="message" class="card p-3 rounded border-l-2 text-sm" :class="status === 'weekend_rest' ? 'border-[#5b8cce]' : 'border-[#3aaf7c]'">
+          [[ message ]]
+        </div>
+
+        <!-- 统计行 -->
+        <div v-if="stocks.length && status === 'ok'" class="flex gap-6 text-sm text-[#777] px-1">
+          <span>已扫描：<b class="text-[#d4cfc4]">[[ total ]]</b> 只</span>
+          <span>信号数：<b class="text-[#e8a020]">[[ stocks.length ]]</b> 个</span>
+          <span>排序：<b class="text-[#d4cfc4]">综合评分 ↓</b></span>
+        </div>
+
+        <!-- 股票信号列表 -->
+        <div v-if="stocks.length && status === 'ok'" class="space-y-2 max-h-[55vh] overflow-y-auto">
+          <div v-for="(s, i) in stocks" :key="i" class="card p-4 rounded">
+            <!-- 排名+代码+名称+评分 -->
+            <div class="flex justify-between mb-2">
+              <div class="flex gap-2 items-start">
+                <span class="text-[#444] text-lg font-mono font-bold w-8">#[[ i + 1 ]]</span>
+                <div>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-[#e8a020] font-mono font-bold text-lg">[[ s.code ]]</span>
+                    <span class="text-lg">[[ s.name ]]</span>
+                    <span class="text-xs px-1.5 py-0.5 border rounded font-mono" :class="s.change_pct > 0 ? 'border-[#3aaf7c]/30 text-[#3aaf7c]' : 'border-[#d94a5d]/30 text-[#d94a5d]'">
+                      [[ s.change_pct > 0 ? '+' : '' ]][[ s.change_pct ]]%
+                    </span>
+                  </div>
+                  <div class="text-2xl font-bold font-mono mt-0.5">¥ [[ s.price ]]</div>
+                </div>
+              </div>
+              <div class="text-center">
+                <div class="text-3xl font-black font-mono" :class="scoreColor(s.signal)">[[ s.signal ]]</div>
+                <div class="text-[10px] text-[#444]">综合评分</div>
+              </div>
+            </div>
+
+            <!-- 优先原因 -->
+            <div class="text-[#e8a020] text-sm font-bold mb-2">📌 优先原因：[[ s.priority_reason ]]</div>
+
+            <!-- 因子网格 -->
+            <div class="grid grid-cols-4 gap-1.5 text-xs mb-2">
+              <div class="bg-[#0a0a0a] p-1.5 rounded">
+                <span class="text-[#777]">残差Z</span><br>
+                <span class="font-mono text-[#d4cfc4]">[[ s.resid_z ]]</span>
+              </div>
+              <div class="bg-[#0a0a0a] p-1.5 rounded">
+                <span class="text-[#777]">布林位</span><br>
+                <span class="font-mono text-[#d4cfc4]">[[ s.bb_position ]]</span>
+              </div>
+              <div class="bg-[#0a0a0a] p-1.5 rounded">
+                <span class="text-[#777]">RSI</span><br>
+                <span class="font-mono text-[#d4cfc4]">[[ s.rsi ]]</span>
+              </div>
+              <div class="bg-[#0a0a0a] p-1.5 rounded">
+                <span class="text-[#777]">ADX</span><br>
+                <span class="font-mono text-[#d4cfc4]">[[ s.adx ]]</span>
+              </div>
+              <div class="bg-[#0a0a0a] p-1.5 rounded">
+                <span class="text-[#777]">MACD柱</span><br>
+                <span class="font-mono text-[#d4cfc4]">[[ s.macd_hist ]]</span>
+              </div>
+              <div class="bg-[#0a0a0a] p-1.5 rounded">
+                <span class="text-[#777]">KDJ-K</span><br>
+                <span class="font-mono text-[#d4cfc4]">[[ s.kdj_k ]]</span>
+              </div>
+              <div class="bg-[#0a0a0a] p-1.5 rounded">
+                <span class="text-[#777]">MA5</span><br>
+                <span class="font-mono text-[#d4cfc4]">[[ s.ma5 ]]</span>
+              </div>
+              <div class="bg-[#0a0a0a] p-1.5 rounded">
+                <span class="text-[#777]">MA20</span><br>
+                <span class="font-mono text-[#d4cfc4]">[[ s.ma20 ]]</span>
+              </div>
+            </div>
+
+            <!-- 子因子 -->
+            <div class="flex gap-2 text-[10px] text-[#777] mb-2 flex-wrap">
+              <span>尾盘动量：<span class="text-[#e8a020]">[[ s.tail_momentum ]]</span></span>
+              <span>大单强度：<span class="text-[#e8a020]">[[ s.big_order ]]</span></span>
+              <span>缩量评分：<span class="text-[#e8a020]">[[ s.shrink_score ]]</span></span>
+            </div>
+
+            <!-- 预期卖出建议 -->
+            <div v-if="s.sell_advice" class="sell-box mb-2 rounded">
+              <div class="text-[#e8a020] text-sm font-bold mb-1">📤 预期卖出：[[ s.sell_advice.sell_time ]]</div>
+              <div class="text-xs text-[#777] space-y-0.5">
+                <div v-for="(d, di) in s.sell_advice.details" :key="di">• [[ d ]]</div>
+              </div>
+            </div>
+
+            <!-- 基本面 -->
+            <div class="text-xs text-[#777] mb-1">
+              市值：[[ s.basic_info.总市值 ]] | PE：[[ s.basic_info.市盈率 ]] | PB：[[ s.basic_info.市净率 ]] | [[ s.basic_info.行业 ]]
+            </div>
+
+            <!-- 板块标签 -->
+            <div class="flex flex-wrap gap-1 mb-2">
+              <span v-for="sec in s.sectors" :key="sec" class="tag">[[ sec ]]</span>
+            </div>
+
+            <!-- 买入记录按钮 -->
+            <button @click="buyStock(s.code, s.price)" class="btn-exec btn-sm rounded">📝 记录买入</button>
+          </div>
+        </div>
+
+        <!-- 无信号 -->
+        <div v-if="!stocks.length && !loading && fetched && status === 'ok'" class="card p-8 text-center text-[#555] text-sm rounded">
+          当前无符合条件的超短信号，请稍后再试或调整策略参数。
+        </div>
+      </div>
+
+      <!-- 右栏 1/5 新闻 -->
+      <div class="w-1/5 flex-shrink-0 space-y-2 w-1-5-mobile">
+        <div class="card p-3 rounded">
+          <div class="text-sm text-[#e8a020] tracking-wider mb-2 border-b border-[#1a1a1a] pb-1 font-bold">📰 市场重大新闻</div>
+          <div class="max-h-[70vh] overflow-y-auto space-y-1">
+            <div v-for="(n, idx) in newsList" :key="idx" class="news-item" @click="n.expanded = !n.expanded">
+              <div class="flex items-center gap-1 mb-0.5">
+                <span class="news-source" :class="n.source.includes('联播') ? 'cctv' : 'express'">[[ n.source ]]</span>
+                <span class="text-[10px] text-[#555]">[[ n.time ]]</span>
+              </div>
+              <div class="text-[#d4cfc4] leading-relaxed text-sm">[[ n.title ]]</div>
+              <div v-if="n.sectors && n.sectors.length" class="news-sectors">
+                <span v-for="(sec, si) in n.sectors" :key="si">
+                  <span :class="sec.type === '利好' ? 'bullish' : 'bearish'">[[ sec.type ]]</span>[[ sec.sector ]]<span v-if="si < n.sectors.length - 1"> · </span>
+                </span>
+              </div>
+              <div v-if="n.content" class="news-content" :class="{ expanded: n.expanded }">[[ n.content ]]</div>
+              <div v-if="n.content && n.content.length > 60" class="text-[10px] text-[#e8a020] mt-1">
+                [[ n.expanded ? '收起 ▲' : '展开全文 ▼' ]]
+              </div>
+            </div>
+            <div v-if="!newsList.length" class="text-xs text-[#555] text-center py-8">
+              ⏳ 新闻加载中...
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== Tab 2: 持仓管理 ==================== -->
+    <div v-show="activeTab === 'positions'" class="max-w-4xl mx-auto p-4 space-y-3">
+      <!-- 盈亏统计 -->
+      <div class="card p-5 rounded">
+        <div class="text-base text-[#e8a020] mb-3 font-bold">📊 模拟盈亏统计</div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div class="bg-[#0a0a0a] p-3 rounded text-center">
+            <div class="text-[#777] text-xs">总交易次数</div>
+            <div class="text-2xl font-bold text-[#d4cfc4]">[[ stats.total_trades ]]</div>
+          </div>
+          <div class="bg-[#0a0a0a] p-3 rounded text-center">
+            <div class="text-[#777] text-xs">胜率</div>
+            <div class="text-2xl font-bold" :class="stats.win_rate >= 50 ? 'text-[#3aaf7c]' : 'text-[#d94a5d]'">[[ stats.win_rate ]]%</div>
+          </div>
+          <div class="bg-[#0a0a0a] p-3 rounded text-center">
+            <div class="text-[#777] text-xs">累计盈亏</div>
+            <div class="text-2xl font-bold" :class="stats.total_profit >= 0 ? 'text-[#3aaf7c]' : 'text-[#d94a5d]'">¥[[ stats.total_profit ]]</div>
+          </div>
+          <div class="bg-[#0a0a0a] p-3 rounded text-center">
+            <div class="text-[#777] text-xs">浮动盈亏</div>
+            <div class="text-2xl font-bold" :class="stats.floating_pnl >= 0 ? 'text-[#3aaf7c]' : 'text-[#d94a5d]'">¥[[ stats.floating_pnl ]]</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 当前持仓 -->
+      <div class="card p-5 rounded">
+        <div class="text-base text-[#e8a020] mb-3 font-bold">💼 当前持仓</div>
+        <div v-if="stats.positions && stats.positions.length">
+          <div class="grid grid-cols-5 text-xs text-[#777] border-b border-[#1a1a1a] pb-2 mb-1">
+            <span>代码</span>
+            <span>买入价</span>
+            <span>现价</span>
+            <span class="text-right">浮动盈亏</span>
+            <span class="text-right">操作</span>
+          </div>
+          <div v-for="p in stats.positions" :key="p.code" class="grid grid-cols-5 text-sm py-2 border-b border-[#0d0d0d] items-center">
+            <span class="text-[#e8a020] font-mono font-bold">[[ p.code ]]</span>
+            <span>¥[[ p.buy_price ]]</span>
+            <span>¥[[ p.current_price || '--' ]]</span>
+            <span class="text-right font-mono" :class="(p.float_profit || 0) >= 0 ? 'text-[#3aaf7c]' : 'text-[#d94a5d]'">
+              [[ (p.float_profit || 0) >= 0 ? '+' : '' ]][[ p.float_profit || '--' ]]%
+            </span>
+            <span class="text-right">
+              <button @click="quickSell(p.code)" class="text-[#d94a5d] hover:text-[#e0556a] text-xs border border-[#d94a5d]/30 px-2 py-1 rounded transition-colors">卖出</button>
+            </span>
+          </div>
+        </div>
+        <div v-else class="text-[#555] text-sm text-center py-8">
+          暂无持仓记录。<br>
+          <span class="text-xs">在「超短扫描」中找到信号后，点击「记录买入」即可添加持仓。</span>
+        </div>
+      </div>
+
+      <!-- 历史交易 -->
+      <div class="card p-5 rounded" v-if="trades && trades.length">
+        <div class="text-base text-[#e8a020] mb-3 font-bold">📋 历史交易记录</div>
+        <div v-for="t in trades.slice().reverse().slice(0, 20)" :key="t.buy_time + t.sell_time" class="border-b border-[#0d0d0d] py-2 text-xs">
+          <div class="flex justify-between">
+            <span class="text-[#e8a020] font-mono">[[ t.code ]]</span>
+            <span :class="t.profit >= 0 ? 'text-[#3aaf7c]' : 'text-[#d94a5d]'">[[ t.profit >= 0 ? '+' : '' ]]¥[[ t.profit ]] ([[ t.profit_pct ]]%)</span>
+          </div>
+          <div class="text-[#555]">买 ¥[[ t.buy_price ]] → 卖 ¥[[ t.sell_price ]] | [[ t.sell_time ]]</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== Tab 3: 复盘日记 ==================== -->
+    <div v-show="activeTab === 'diary'" class="max-w-3xl mx-auto p-4 space-y-3">
+      <div class="card p-5 rounded">
+        <div class="text-base text-[#e8a020] mb-3 font-bold">📝 新增复盘</div>
+        <textarea v-model="newDiary" rows="5" placeholder="写下今日复盘内容...&#10;例如：今天追高了XX股，应该等回调再进；尾盘信号准确率不错，坚持策略。止损纪律执行到位。"
+          class="w-full bg-[#0a0a0a] border border-[#1a1a1a] text-[#d4cfc4] p-3 text-sm resize-none rounded focus:outline-none focus:border-[#e8a020] transition-colors"></textarea>
+        <div class="flex items-center justify-between mt-2">
+          <div v-if="newDiary.trim()" class="text-xs text-[#777]">
+            系统将自动提炼提醒：
+            <span v-for="(r, ri) in previewReminders" :key="ri" class="tag ml-1">💡 [[ r ]]</span>
+          </div>
+          <button @click="saveDiary" :disabled="!newDiary.trim()" class="btn-exec btn-sm rounded ml-auto">💾 保存复盘</button>
+        </div>
+      </div>
+
+      <div v-if="diaryList.length" class="card p-5 rounded">
+        <div class="text-base text-[#e8a020] mb-3 font-bold">📋 历史复盘 (最近30条)</div>
+        <div v-for="d in diaryList.slice().reverse()" :key="d.id" class="bg-[#0d0d0d] border-l-2 border-[#e8a020] p-3 mb-2 rounded-r">
+          <div class="flex justify-between text-xs text-[#555] mb-1">
+            <span>#[[ d.id ]]</span>
+            <span>[[ d.date ]]</span>
+          </div>
+          <div class="text-sm text-[#d4cfc4] whitespace-pre-wrap">[[ d.text ]]</div>
+          <div class="mt-2 flex flex-wrap gap-1">
+            <span v-for="(r, ri) in d.reminder" :key="ri" class="tag">💡 [[ r ]]</span>
+          </div>
+          <button @click="deleteDiary(d.id)" class="text-xs text-[#555] hover:text-[#d94a5d] mt-2 transition-colors">🗑 删除</button>
+        </div>
+      </div>
+
+      <div v-if="!diaryList.length" class="card p-8 text-center text-[#555] text-sm rounded">
+        📭 还没有复盘记录。<br>
+        <span class="text-xs">写下你的第一笔复盘，系统会自动提炼关键提醒。</span>
+      </div>
+    </div>
+
+    <!-- ==================== 底部 ==================== -->
+    <div class="border-t border-[#1a1a1a] px-4 py-2.5 text-[10px] text-[#3a3a3a] flex justify-between">
+      <span>免责声明：本工具仅供学习研究，不构成投资建议。市场有风险，投资需谨慎。</span>
+      <span>🍊 橘子量化 v3.1 · [[ currentYear ]]</span>
+    </div>
+
+    <!-- ==================== 狗窝 ==================== -->
+    <div class="doghouse" @dblclick="toggleDoghouse" title="双击唤醒/回窝">
+      <canvas class="doghouse-canvas" ref="houseCanvas" width="80" height="64"></canvas>
+      <div class="text-[10px] text-[#777] text-center -mt-1 select-none">双击[[ dogSleeping ? '唤醒' : '回窝' ]]</div>
+    </div>
+
+    <!-- ==================== 像素小狗 ==================== -->
+    <div class="pet-container" v-show="!dogSleeping" ref="petRef"
+      :style="{ left: petX + 'px', top: petY + 'px' }"
+      @mousedown="startDrag"
+      @touchstart="startDragTouch"
+      @click="onPetClick"
+      title="点击获取提醒 · 按住拖拽">
+      <div class="pet-bubble">[[ petMessage ]]</div>
+      <canvas class="pet-canvas" ref="petCanvas" width="64" height="64"></canvas>
+    </div>
+
+  </div>
+
+  <script>
+    const { createApp } = Vue;
+    createApp({
+      delimiters: ['[[', ']]'],
+      data() {
+        return {
+          // 标签页
+          activeTab: 'trade',
+
+          // 扫描
+          loading: false,
+          fetched: false,
+          status: '',
+          message: '',
+          stocks: [],
+          total: 0,
+
+          // 热力图 & 资金流
+          heatmapData: [],
+          moneyflowDate: '',
+          moneyflowIn: [],
+          moneyflowOut: [],
+
+          // 新闻
+          newsList: [],
+
+          // 易命
+          yiming: { id: 1, text: '', translation: '', summary: '' },
+
+          // 小橘子
+          petMessage: '汪汪~ 🐶',
+          petX: 120,
+          petY: window.innerHeight - 200,
+          petAnimFrame: 0,
+          petInterval: null,
+          petWagging: false,
+          dogSleeping: true,
+
+          // 鼠标 & 拖拽
+          mouseX: 200,
+          mouseY: 400,
+          dragging: false,
+          dragStartX: 0,
+          dragStartY: 0,
+          petStartX: 0,
+          petStartY: 0,
+
+          // 复盘
+          newDiary: '',
+          diaryList: [],
+
+          // 卖出检查
+          sellCheckCode: '',
+          sellCheckPrice: '',
+          sellResult: null,
+
+          // 持仓
+          stats: { total_trades: 0, win_rate: 0, total_profit: 0, floating_pnl: 0, positions: [] },
+          trades: [],
+
+          // 定时扫描
+          autoScanEnabled: false,
+          autoScanInterval: null,
+
+          // 时间
+          currentTime: '',
+          currentDate: '',
+          currentYear: new Date().getFullYear(),
+        }
+      },
+      computed: {
+        previewReminders() {
+          const kw = { '止损': '严格执行止损', '追高': '避免追高', '仓位': '注意仓位管理', '贪婪': '克服贪婪', '恐惧': '克服恐惧', '纪律': '坚守纪律', '冲动': '避免冲动', '耐心': '保持耐心', '回撤': '控制回撤' };
+          const r = [];
+          for (const [k, v] of Object.entries(kw)) {
+            if (this.newDiary.includes(k)) r.push(v);
+          }
+          return r.length ? r.slice(0, 3) : ['认真复盘，持续进步'];
+        },
+      },
+      methods: {
+        // ==================== 狗窝绘制 ====================
+        drawDoghouse() {
+          const c = this.$refs.houseCanvas;
+          if (!c) return;
+          const ctx = c.getContext('2d');
+          ctx.clearRect(0, 0, 80, 64);
+          const p = 8;
+          // 墙壁
+          ctx.fillStyle = '#6b4030';
+          ctx.fillRect(p * 1, p * 3, p * 8, p * 5);
+          // 屋顶
+          ctx.fillStyle = '#8b5a3c';
+          ctx.fillRect(p * 1, p * 2, p * 8, p * 1.5);
+          // 三角屋顶
+          ctx.fillStyle = '#4a2010';
+          ctx.beginPath();
+          ctx.moveTo(p * 1, p * 2);
+          ctx.lineTo(p * 5, 0);
+          ctx.lineTo(p * 9, p * 2);
+          ctx.fill();
+          // 门口
+          ctx.fillStyle = '#2a0a00';
+          ctx.fillRect(p * 3, p * 4.5, p * 4, p * 3);
+          // 睡觉的小狗
+          if (this.dogSleeping) {
+            ctx.fillStyle = '#f0c880';
+            ctx.fillRect(p * 4, p * 5, p * 2, p * 2);
+            ctx.fillStyle = '#1a0a00';
+            ctx.fillRect(p * 4.5, p * 5.3, p * 0.5, p * 0.5);
+            ctx.fillRect(p * 5.5, p * 5.3, p * 0.5, p * 0.5);
+          }
+        },
+
+        toggleDoghouse() {
+          this.dogSleeping = !this.dogSleeping;
+          if (!this.dogSleeping) {
+            this.petX = 120;
+            this.petY = window.innerHeight - 200;
+            this.petMessage = '汪汪！出来玩~ 🐶';
+          } else {
+            this.petMessage = 'zzZ... 回窝睡觉了 💤';
+          }
+          this.drawDoghouse();
+        },
+
+        // ==================== 小狗绘制 ====================
+        drawPet() {
+          const canvas = this.$refs.petCanvas;
+          if (!canvas || this.dogSleeping) return;
+          const ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, 64, 64);
+          const p = 8;
+
+          // 身体
+          ctx.fillStyle = '#d4a050';
+          ctx.fillRect(p * 2, p * 3, p * 4, p * 3);
+          // 肚子
+          ctx.fillStyle = '#f0d8a0';
+          ctx.fillRect(p * 3, p * 4, p * 2, p * 2);
+          // 头
+          ctx.fillStyle = '#d4a050';
+          ctx.fillRect(p * 1, p * 0.5, p * 5, p * 3);
+          // 耳朵
+          ctx.fillStyle = '#b87830';
+          ctx.fillRect(0, 0, p * 2, p * 2.5);
+          ctx.fillRect(p * 6, 0, p * 2, p * 2.5);
+          ctx.fillStyle = '#e8b860';
+          ctx.fillRect(p * 0.5, 0, p, p * 1.5);
+          ctx.fillRect(p * 6.5, 0, p, p * 1.5);
+
+          // 眨眼
+          const blink = Math.floor(this.petAnimFrame / 20) % 5 === 0;
+          ctx.fillStyle = '#1a0a00';
+          if (!blink) {
+            ctx.fillRect(p * 2, p * 1.5, p, p * 1.5);
+            ctx.fillRect(p * 5, p * 1.5, p, p * 1.5);
+          }
+          // 眼白
+          ctx.fillStyle = '#fff';
+          if (!blink) {
+            ctx.fillRect(p * 2.3, p * 1.5, p * 0.4, p * 0.4);
+            ctx.fillRect(p * 5.3, p * 1.5, p * 0.4, p * 0.4);
+          }
+
+          // 鼻子
+          ctx.fillStyle = '#2a0a00';
+          ctx.fillRect(p * 3.5, p * 2.5, p, p * 0.7);
+          // 嘴
+          ctx.fillStyle = '#6a3010';
+          ctx.fillRect(p * 3, p * 3.2, p * 2, p * 0.4);
+
+          // 摇尾巴
+          const wag = this.petWagging ? Math.sin(this.petAnimFrame * 0.5) * 4 : 0;
+          ctx.fillStyle = '#d4a050';
+          ctx.fillRect(p * 5.5, p * 1.5 + wag, p, p * 2);
+
+          // 小短腿
+          ctx.fillStyle = '#c09040';
+          ctx.fillRect(p * 2.2, p * 6, p, p * 1.5);
+          ctx.fillRect(p * 4.8, p * 6, p, p * 1.5);
+
+          // 项圈
+          ctx.fillStyle = '#e05030';
+          ctx.fillRect(p * 1.5, p * 3, p * 5, p * 0.5);
+        },
+
+        // ==================== 小狗跟随 ====================
+        updatePetPosition() {
+          if (this.dogSleeping || this.dragging) return;
+          const dx = this.mouseX - this.petX - 32;
+          const dy = this.mouseY - this.petY - 32;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > 3) {
+            this.petX += dx * 0.08;
+            this.petY += dy * 0.08;
+            this.petWagging = true;
+          } else {
+            this.petWagging = false;
+          }
+          this.petX = Math.max(10, Math.min(window.innerWidth - 80, this.petX));
+          this.petY = Math.max(80, Math.min(window.innerHeight - 100, this.petY));
+        },
+
+        // ==================== 小狗拖拽 ====================
+        startDrag(e) {
+          if (this.dogSleeping) return;
+          e.preventDefault();
+          this.dragging = true;
+          this.dragStartX = e.clientX;
+          this.dragStartY = e.clientY;
+          this.petStartX = this.petX;
+          this.petStartY = this.petY;
+          window.addEventListener('mousemove', this.onDrag);
+          window.addEventListener('mouseup', this.stopDrag);
+        },
+        startDragTouch(e) {
+          if (this.dogSleeping) return;
+          const t = e.touches[0];
+          this.dragging = true;
+          this.dragStartX = t.clientX;
+          this.dragStartY = t.clientY;
+          this.petStartX = this.petX;
+          this.petStartY = this.petY;
+          window.addEventListener('touchmove', this.onDragTouch);
+          window.addEventListener('touchend', this.stopDragTouch);
+        },
+        onDrag(e) {
+          if (!this.dragging) return;
+          this.petX = this.petStartX + (e.clientX - this.dragStartX);
+          this.petY = this.petStartY + (e.clientY - this.dragStartY);
+        },
+        onDragTouch(e) {
+          if (!this.dragging) return;
+          const t = e.touches[0];
+          this.petX = this.petStartX + (t.clientX - this.dragStartX);
+          this.petY = this.petStartY + (t.clientY - this.dragStartY);
+        },
+        stopDrag() {
+          this.dragging = false;
+          window.removeEventListener('mousemove', this.onDrag);
+          window.removeEventListener('mouseup', this.stopDrag);
+        },
+        stopDragTouch() {
+          this.dragging = false;
+          window.removeEventListener('touchmove', this.onDragTouch);
+          window.removeEventListener('touchend', this.stopDragTouch);
+        },
+
+        // ==================== 小狗点击 ====================
+        async onPetClick(e) {
+          if (this.dragging) return;
+          e.stopPropagation();
+          await this.fetchPetReminder();
+        },
+
+        // ==================== API 调用 ====================
+        async fetchPetReminder() {
+          try {
+            const r = await fetch('/api/pet_reminder');
+            const d = await r.json();
+            this.petMessage = d.text;
+          } catch (e) { /* ignore */ }
+        },
+
+        async executeScan() {
+          this.loading = true;
+          this.fetched = true;
+          this.stocks = [];
+          try {
+            const r = await fetch('/api/analyze', { method: 'POST' });
+            const d = await r.json();
+            this.status = d.status || '';
+            this.message = d.message || '';
+            this.stocks = d.stocks || [];
+            this.total = d.total || 0;
+          } catch (e) {
+            this.message = '扫描失败，请检查后端服务';
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        async checkSell() {
+          if (!this.sellCheckCode.trim()) return;
+          try {
+            const r = await fetch('/api/sell_check', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                code: this.sellCheckCode.trim(),
+                buy_price: parseFloat(this.sellCheckPrice) || 0
+              })
+            });
+            this.sellResult = await r.json();
+          } catch (e) {
+            this.sellResult = { error: '请求失败' };
+          }
+        },
+
+        async buyStock(code, price) {
+          try {
+            const r = await fetch('/api/position/buy', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ code, price })
+            });
+            const d = await r.json();
+            if (d.ok) {
+              this.petMessage = '已记录买入！记得明天检查卖出哦~ 🐶';
+              this.fetchStats();
+            } else {
+              alert(d.error || '买入失败');
+            }
+          } catch (e) {
+            alert('请求失败');
+          }
+        },
+
+        async quickSell(code) {
+          const price = prompt(`输入 ${code} 的卖出价格：`);
+          if (!price) return;
+          try {
+            const r = await fetch('/api/position/sell', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ code, price: parseFloat(price) })
+            });
+            const d = await r.json();
+            if (d.ok) {
+              this.petMessage = '卖出记录已保存！记得复盘总结~ 🐶';
+              this.fetchStats();
+            } else {
+              alert(d.error || '卖出失败');
+            }
+          } catch (e) {
+            alert('请求失败');
+          }
+        },
+
+        async fetchStats() {
+          try {
+            const r = await fetch('/api/stats');
+            this.stats = await r.json();
+            // 同时获取历史交易
+            const trades = await fetch('/api/position/sell'); // 其实应该用单独接口，这里简化从stats获取positions
+          } catch (e) { /* ignore */ }
+          // 获取历史交易列表
+          try {
+            // 从localStorage或另一个接口获取，这里用简化方式
+            // 实际项目中应该有独立的 /api/trades 接口
+            // 这里我们在后端 stats 接口里没有包含 trades，所以用简单的处理
+            // 直接用一个单独请求
+            const r = await fetch('/api/trades');
+            this.trades = await r.json();
+          } catch (e) {
+            this.trades = [];
+          }
+        },
+
+        async loadDiary() {
+          try {
+            const r = await fetch('/api/diary');
+            this.diaryList = await r.json();
+          } catch (e) { /* ignore */ }
+        },
+
+        async saveDiary() {
+          if (!this.newDiary.trim()) return;
+          try {
+            const r = await fetch('/api/diary', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: this.newDiary })
+            });
+            const d = await r.json();
+            this.diaryList.push(d);
+            this.newDiary = '';
+            this.fetchPetReminder();
+          } catch (e) {
+            alert('保存失败');
+          }
+        },
+
+        async deleteDiary(id) {
+          try {
+            await fetch(`/api/diary/${id}`, { method: 'DELETE' });
+            this.diaryList = this.diaryList.filter(e => e.id !== id);
+          } catch (e) { /* ignore */ }
+        },
+
+    async fetchHeatmap() {
+  try {
+    const r = await fetch('/api/heatmap');
+    const d = await r.json();
+    this.heatmapData = d.data || [];
+  } catch (e) { /* ignore */ }
+},
+
+        async fetchNews() {
+          try {
+            const r = await fetch('/api/news');
+            const data = await r.json();
+            this.newsList = data.map(n => ({ ...n, expanded: false }));
+          } catch (e) { /* ignore */ }
+        },
+
+        async fetchMoneyflow() {
+          try {
+            const r = await fetch('/api/moneyflow');
+            const d = await r.json();
+            this.moneyflowDate = d.date || '';
+            this.moneyflowIn = d.top_inflow || [];
+            this.moneyflowOut = d.top_outflow || [];
+          } catch (e) { /* ignore */ }
+        },
+
+        async loadYiming() {
+          try {
+            const r = await fetch('/api/yiming');
+            this.yiming = await r.json();
+          } catch (e) { /* ignore */ }
+        },
+
+        // ==================== 工具函数 ====================
+        heatClass(v) {
+          const n = Number(v);
+          if (n > 2) return 'heat-up';
+          if (n > 0) return 'heat-up2';
+          if (n > -2) return 'heat-down2';
+          return 'heat-down';
+        },
+
+        fv2(v) {
+          if (!v) return '--';
+          const n = Number(v);
+          if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿';
+          return (n / 1e4).toFixed(2) + '万';
+        },
+
+        scoreColor(v) {
+          if (v >= 75) return 'text-[#3aaf7c]';
+          if (v >= 55) return 'text-[#e8a020]';
+          return 'text-[#777]';
+        },
+
+        // ==================== 定时扫描 ====================
+        toggleAutoScan() {
+          this.autoScanEnabled = !this.autoScanEnabled;
+          if (this.autoScanEnabled) {
+            this.petMessage = '定时扫描已开启，14:30自动执行~ 🕑';
+            this.startAutoScan();
+          } else {
+            this.stopAutoScan();
+            this.petMessage = '定时扫描已关闭~';
+          }
+        },
+
+        startAutoScan() {
+          this.stopAutoScan();
+          this.autoScanInterval = setInterval(() => {
+            const now = new Date();
+            const h = now.getHours();
+            const m = now.getMinutes();
+            const wd = now.getDay();
+            // 工作日 14:30 触发
+            if (this.autoScanEnabled && h === 14 && m === 30 && wd >= 1 && wd <= 5) {
+              console.log('🕑 定时扫描触发');
+              this.executeScan();
+            }
+          }, 30000); // 每30秒检查一次
+        },
+
+        stopAutoScan() {
+          if (this.autoScanInterval) {
+            clearInterval(this.autoScanInterval);
+            this.autoScanInterval = null;
+          }
+        },
+
+        // ==================== 时钟 ====================
+        onMouseMove(e) {
+          this.mouseX = e.clientX;
+          this.mouseY = e.clientY;
+        },
+
+        updateClock() {
+          const n = new Date();
+          this.currentTime = n.toLocaleTimeString('zh-CN', { hour12: false });
+          this.currentDate = n.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', weekday: 'short' });
+        },
+      },
+
+      // ==================== 生命周期 ====================
+      async mounted() {
+        // 时钟
+        this.updateClock();
+        setInterval(this.updateClock, 1000);
+
+        // 初始数据加载
+        await Promise.all([
+          this.executeScan(),
+          this.loadYiming(),
+          this.fetchPetReminder(),
+          this.fetchHeatmap(),
+          this.fetchNews(),
+          this.fetchMoneyflow(),
+          this.fetchStats(),
+        ]);
+
+        // 绘制狗窝
+        this.drawDoghouse();
+        this.drawPet();
+
+        // 小狗动画 ~20fps
+        this.petInterval = setInterval(() => {
+          this.petAnimFrame++;
+          this.drawPet();
+        }, 50);
+
+        // 小狗跟随动画
+        const animateLoop = () => {
+          this.updatePetPosition();
+          requestAnimationFrame(animateLoop);
+        };
+        animateLoop();
+
+        // 鼠标追踪
+        window.addEventListener('mousemove', this.onMouseMove);
+
+        // 定期刷新
+        setInterval(this.fetchPetReminder, 30000);
+        setInterval(this.fetchNews, 120000);
+        setInterval(this.fetchMoneyflow, 60000);
+        setInterval(this.fetchHeatmap, 90000);
+      },
+
+      beforeUnmount() {
+        if (this.petInterval) clearInterval(this.petInterval);
+        this.stopAutoScan();
+        window.removeEventListener('mousemove', this.onMouseMove);
+      },
+    }).mount('#app');
+  </script>
+</body>
+</html>
