@@ -1,0 +1,22 @@
+{
+  "name": "橘子量化 · 量化超短线",
+  "short_name": "橘子量化",
+  "description": "量化超短线 | 尾盘买入·早盘卖出·坚决执行",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#080808",
+  "theme_color": "#e8a020",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
