@@ -19,6 +19,7 @@ warnings.filterwarnings('ignore')
 
 from config import *
 from data import *
+from data import _get_pool_snapshot
 from engine import *
 
 # Try loading AI services

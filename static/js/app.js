@@ -23,6 +23,7 @@ createApp({
     const heatmapData = ref([]); const moneyIn = ref([]); const moneyOut = ref([]); const moneyflowDate = ref('');
     const marketEnvText = ref(''); const sectorRotation = ref([]);
     const newsList = ref([]); const currentTime = ref(''); const currentDate = ref('');
+    const yiming = ref({id:1,text:'加载中...',translation:'',summary:''});
 
     // Auto scan
     const autoScanEnabled = ref(false); const scanTimer = ref(null);
@@ -42,6 +43,9 @@ createApp({
 
     // Long term eval
     const years = ref(3); const longTermResult = ref(null); const longTermLoading = ref(false);
+
+    // Server management
+    const weightsResult = ref(null); const dataQuality = ref(null); const updateResult = ref('');
 
     // K-line
     const klineVisible = ref(false); const klineCode = ref('');
@@ -160,6 +164,12 @@ createApp({
       if (!v) return '--';
       const n = Number(v);
       return n >= 1e8 ? (n/1e8).toFixed(2)+'亿' : (n/1e4).toFixed(2)+'万';
+    }
+
+    function holdDays(buy, sell) {
+      if (!buy || !sell) return '--';
+      const b = new Date(buy); const s = new Date(sell);
+      return Math.round((s - b) / 86400000);
     }
 
     // ==================== Auto Scan ====================
@@ -298,6 +308,16 @@ createApp({
       finally { longTermLoading.value = false; }
     }
 
+    async function updateWeights() {
+      try { const r = await fetch('/api/update_weights', {method:'POST'}); weightsResult.value = await r.json(); } catch(e) {}
+    }
+    async function checkDataQuality() {
+      try { const r = await fetch('/api/data_quality'); dataQuality.value = await r.json(); } catch(e) {}
+    }
+    async function gitUpdate() {
+      try { const r = await fetch('/api/update', {method:'POST'}); const d = await r.json(); updateResult.value = d.output || d.error; } catch(e) {}
+    }
+
     // ==================== Mount ====================
 
     onMounted(async () => {
@@ -305,6 +325,7 @@ createApp({
       await fetchMarketTicker(); await executeScan();
       await loadAIBrief(); await fetchHeatmap(); await fetchMoney();
       await loadStats(); await loadEquityCurve();
+      try { const r = await fetch('/api/yiming'); yiming.value = await r.json(); } catch(e) {}
       try { const r = await fetch('/api/news'); newsList.value = (await r.json()).map(n=>({...n,expanded:false})); } catch(e) {}
       setInterval(fetchMarketTicker, 30000);
     });
@@ -314,10 +335,10 @@ createApp({
       sellCode, sellPrice, sellResult, checkSell,
       stats, trades, loadStats,
       newDiary, diaryList, loadDiary, saveDiary, deleteDiary, previewReminders,
-      marketTicker, aiBrief, loadAIBrief,
+      marketTicker, yiming, aiBrief, loadAIBrief,
       heatmapData, moneyIn, moneyOut, moneyflowDate,
       marketEnvText, fetchMarketEnv, sectorRotation, fetchSectorRotation,
-      newsList, currentTime, currentDate, fv,
+      newsList, currentTime, currentDate, fv, holdDays,
       autoScanEnabled, scanTimer, toggleAutoScan,
       equityCurveData, monthlyPnlData, loadEquityCurve,
       executeScan, buyStock, quickSell,
@@ -328,6 +349,8 @@ createApp({
       klineVisible, klineCode, klineImage, klineLoading, klineError, showKline,
       factorDetailVisible, factorDetailCode, factorDetailData, factorDetailSignal,
       factorDetailReason, factorDetailLoading, showFactorDetail,
+      weightsResult, dataQuality, updateResult,
+      updateWeights, checkDataQuality, gitUpdate,
     };
   }
 }).mount('#app');
