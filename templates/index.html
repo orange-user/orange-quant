@@ -4,536 +4,409 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>橘子量化 · 量化超短线</title>
-  <meta name="theme-color" content="#e8a020">
+  <meta name="theme-color" content="#131722">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="manifest" href="/static/manifest.json">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <!-- 使用稳定且快速的国内CDN -->
   <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
   <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
   <div id="app">
-    <!-- 顶部状态栏 -->
-    <div style="background:#0a0a0a;padding:10px 18px;border-bottom:1px solid var(--border);" class="flex justify-between items-center flex-wrap gap-2">
-      <div class="flex items-center gap-3">
-        <span class="text-amber font-bold text-xl">🍊 橘子量化 v3.1</span>
-        <span v-if="marketTicker.sh000001" class="text-sm font-mono">
-          <span :class="marketTicker.sh000001.change_pct>=0?'text-green':'text-red'">
-            上证 [[ marketTicker.sh000001.price.toFixed(0) ]] [[ marketTicker.sh000001.change_pct>=0?'+':'' ]][[ marketTicker.sh000001.change_pct ]]%
+    <!-- Header -->
+    <header style="background:var(--card);border-bottom:1px solid var(--border);padding:0 16px;">
+      <div class="flex justify-between items-center flex-wrap gap-2" style="height:48px;">
+        <div class="flex items-center gap-4">
+          <span style="color:var(--amber);font-weight:700;font-size:16px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2.5" style="vertical-align:-3px;margin-right:4px;"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+            橘子量化
           </span>
-          <span class="text-sub mx-1">|</span>
-          <span :class="marketTicker.sz399001.change_pct>=0?'text-green':'text-red'">
-            深证 [[ marketTicker.sz399001.price.toFixed(0) ]] [[ marketTicker.sz399001.change_pct>=0?'+':'' ]][[ marketTicker.sz399001.change_pct ]]%
-          </span>
-          <span class="text-sub mx-1">|</span>
-          <span :class="marketTicker.sz399006.change_pct>=0?'text-green':'text-red'">
-            创业板 [[ marketTicker.sz399006.price.toFixed(0) ]] [[ marketTicker.sz399006.change_pct>=0?'+':'' ]][[ marketTicker.sz399006.change_pct ]]%
-          </span>
-        </span>
-      </div>
-      <div class="flex items-center gap-3 text-sm text-sub">
-        <button @click="toggleAutoScan" :class="autoScanEnabled?'text-green':'text-sub'">[[ autoScanEnabled ? '定时开' : '定时关' ]]</button>
-        <span>[[ currentTime ]] [[ currentDate ]]</span>
-      </div>
-    </div>
-
-    <!-- 标签页 -->
-    <div style="background:#0a0a0a;padding:0 18px;border-bottom:1px solid var(--border);">
-      <span class="tab" :class="{active:tab==='trade'}" @click="tab='trade'">📊 超短扫描</span>
-      <span class="tab" :class="{active:tab==='pos'}" @click="tab='pos';loadStats();loadEquityCurve()">💼 持仓管理</span>
-      <span class="tab" :class="{active:tab==='diary'}" @click="tab='diary';loadDiary()">📝 复盘日记</span>
-      <span class="tab" :class="{active:tab==='tools'}" @click="tab='tools'">🔧 工具箱</span>
-    </div>
-
-    <!-- 超短扫描布局 -->
-    <div v-show="tab==='trade'" class="flex gap-3 p-3 flex-col-mobile" style="min-height:calc(100vh - 160px);">
-      <!-- 左侧 30% -->
-      <div class="w-30" style="width:30%; min-width:280px;">
-        <div class="card">
-          <div class="text-base text-amber font-bold mb-2">📿 今日一术 · 第[[ yiming.id ]]术</div>
-          <div class="text-base">「[[ yiming.text ]]」</div>
-          <div class="text-sm text-sub">📖 [[ yiming.translation ]]</div>
-          <div class="text-sm text-amber mt-1">🎯 [[ yiming.summary ]]</div>
+          <span class="text-muted text-xs" style="letter-spacing:1px;">尾盘买入 &middot; 早盘卖出</span>
         </div>
-        <div class="card">
-          <div class="text-base text-sub font-bold mb-2">🔥 板块热力图</div>
-          <div class="flex flex-wrap gap-1 max-h-40 overflow-y-auto">
-            <span v-for="h in heatmapData" class="text-xs px-2 py-0.5 font-mono rounded" :class="heatClass(h.涨跌幅)">[[ h.板块名称 ]] [[ h.涨跌幅>0?'+':'' ]][[ h.涨跌幅 ]]%</span>
-          </div>
-        </div>
-        <div class="card">
-          <div class="text-base text-sub font-bold mb-2">💰 主力资金 ([[ moneyflowDate ]])</div>
-          <div class="text-sm text-green font-bold">📈 流入TOP5</div>
-          <div v-for="m in moneyIn.slice(0,5)" class="text-sm flex justify-between py-0.5" style="border-bottom:1px solid #0d0d0d;"><span>[[ m.板块名称 ]]</span><span class="text-green">+[[ fv(m.主力净流入) ]]</span></div>
-          <div class="text-sm text-red font-bold mt-2">📉 流出TOP5</div>
-          <div v-for="m in moneyOut.slice(0,5)" class="text-sm flex justify-between py-0.5" style="border-bottom:1px solid #0d0d0d;"><span>[[ m.板块名称 ]]</span><span class="text-red">[[ fv(m.主力净流入) ]]</span></div>
-        </div>
-        <div class="card">
-          <div class="text-base text-sub font-bold mb-2">🐶 小橘子提醒</div>
-          <div class="text-base">[[ petMessage ]]</div>
-        </div>
-        <div class="card">
-          <div class="text-base text-sub font-bold mb-2">🤖 AI 市场简报</div>
-          <div class="text-sm" style="white-space:pre-wrap;">[[ aiBrief ]]</div>
-          <button class="btn btn-sm mt-2" @click="loadAIBrief">刷新AI简报</button>
-        </div>
-        <div class="card">
-          <div class="text-base text-sub font-bold mb-2">📈 市场环境</div>
-          <div class="text-sm">[[ marketEnvText ]]</div>
-          <button class="btn btn-sm mt-2" @click="fetchMarketEnv">刷新</button>
-        </div>
-        <div class="card">
-          <div class="text-base text-sub font-bold mb-2">🔄 行业轮动</div>
-          <div class="text-sm" v-for="s in sectorRotation" :key="s.板块名称">[[ s.板块名称 ]]</div>
-          <button class="btn btn-sm mt-2" @click="fetchSectorRotation">刷新</button>
+        <div class="flex items-center gap-5 text-xs font-mono">
+          <template v-if="marketTicker.sh000001">
+            <span :class="marketTicker.sh000001.change_pct>=0?'price-up':'price-down'">
+              上证 [[ marketTicker.sh000001.price.toFixed(0) ]] [[ marketTicker.sh000001.change_pct>=0?'+':'' ]][[ marketTicker.sh000001.change_pct ]]%
+            </span>
+            <span :class="marketTicker.sz399001.change_pct>=0?'price-up':'price-down'">
+              深证 [[ marketTicker.sz399001.price.toFixed(0) ]] [[ marketTicker.sz399001.change_pct>=0?'+':'' ]][[ marketTicker.sz399001.change_pct ]]%
+            </span>
+            <span :class="marketTicker.sz399006.change_pct>=0?'price-up':'price-down'">
+              创业板 [[ marketTicker.sz399006.price.toFixed(0) ]] [[ marketTicker.sz399006.change_pct>=0?'+':'' ]][[ marketTicker.sz399006.change_pct ]]%
+            </span>
+          </template>
+          <span class="text-muted">|</span>
+          <button @click="toggleAutoScan" class="text-xs" :style="{color: autoScanEnabled ? 'var(--green)' : 'var(--sub)', background:'none', border:'none', cursor:'pointer'}">
+            [[ autoScanEnabled ? '● 定时扫描 14:30' : '○ 定时关' ]]
+          </button>
+          <span class="text-muted">[[ currentTime ]]</span>
         </div>
       </div>
+    </header>
 
-      <!-- 中间 50% -->
-      <div class="w-50" style="width:50%; min-width:480px;">
-        <div class="text-center mb-2">
-          <button class="btn" @click="executeScan">[[ loading ? '⏳ AI扫描中...' : '▶ 执行超短扫描' ]]</button>
-        </div>
-        <div class="card">
-          <div class="text-base text-amber font-bold mb-2">📤 次日卖出检查</div>
-          <div class="flex gap-2 flex-wrap items-end">
-            <div><label class="text-sm text-sub">代码</label><br><input v-model="sellCode" placeholder="如600519" style="width:120px;"></div>
-            <div><label class="text-sm text-sub">买入价</label><br><input v-model="sellPrice" placeholder="如1680" style="width:120px;"></div>
-            <button class="btn btn-sm" @click="checkSell">检查卖出</button>
+    <!-- Tab Bar -->
+    <nav class="tab-bar" style="padding:0 16px;">
+      <span class="tab" :class="{active:tab==='scan'}" @click="tab='scan'">市场扫描</span>
+      <span class="tab" :class="{active:tab==='pos'}" @click="tab='pos';loadStats();loadEquityCurve()">持仓管理</span>
+      <span class="tab" :class="{active:tab==='diary'}" @click="tab='diary';loadDiary()">复盘日记</span>
+      <span class="tab" :class="{active:tab==='tools'}" @click="tab='tools'">工具箱</span>
+    </nav>
+
+    <main class="max-w-5xl p-3">
+
+      <!-- ==================== 市场扫描 ==================== -->
+      <div v-show="tab==='scan'">
+        <div class="flex gap-3 flex-col-mobile">
+          <!-- Left sidebar -->
+          <div style="width:280px;min-width:240px;flex-shrink:0;">
+            <!-- AI Brief -->
+            <div class="card">
+              <div class="card-header">AI 市场简报</div>
+              <div class="text-sm" style="white-space:pre-wrap;line-height:1.6;">[[ aiBrief || '点击下方按钮获取最新AI市场分析' ]]</div>
+              <button class="btn btn-sm mt-2" @click="loadAIBrief">刷新简报</button>
+            </div>
+
+            <!-- Sell Check -->
+            <div class="card">
+              <div class="card-header">卖出检查</div>
+              <div class="flex gap-1 flex-wrap items-end">
+                <div><label class="text-xs text-sub">代码</label><br><input v-model="sellCode" placeholder="600519" style="width:80px;"></div>
+                <div><label class="text-xs text-sub">买入价</label><br><input v-model="sellPrice" placeholder="1680" style="width:80px;"></div>
+                <button class="btn btn-primary btn-sm" @click="checkSell">检查</button>
+              </div>
+              <div v-if="sellResult" class="mt-3 p-3 rounded text-xs" :class="sellResult.should_sell ? (sellResult.level==='strong_sell'?'price-down':'text-amber') : 'price-up'" style="border:1px solid currentColor;background:rgba(0,0,0,0.3);">
+                <div class="font-bold text-sm mb-1">[[ sellResult.advice ]]</div>
+                <div v-for="r in sellResult.reasons">[[ r ]]</div>
+                <div class="text-sub mt-1">¥[[ sellResult.buy_price ]] → ¥[[ sellResult.current_price ]] ([[ sellResult.profit_pct>0?'+':'' ]][[ sellResult.profit_pct ]]%) | 信号:[[ sellResult.signal || '--' ]]</div>
+              </div>
+            </div>
+
+            <!-- Market Env -->
+            <div class="card">
+              <div class="card-header">市场环境</div>
+              <div class="text-sm">[[ marketEnvText || '加载中...' ]]</div>
+              <button class="btn btn-sm mt-2" @click="fetchMarketEnv">刷新</button>
+            </div>
+
+            <!-- Sector Rotation -->
+            <div class="card">
+              <div class="card-header">行业资金</div>
+              <div class="text-xs overflow-y-auto" style="max-height:200px;">
+                <div v-for="s in sectorRotation.slice(0,10)" class="flex justify-between py-0.5" style="border-bottom:1px solid rgba(42,46,57,0.3);">
+                  <span>[[ s.板块名称 ]]</span>
+                  <span class="font-mono" :class="s.主力净流入>0?'price-up':'price-down'">[[ s.主力净流入>0?'+':'' ]][[ fv(s.主力净流入) ]]</span>
+                </div>
+              </div>
+              <button class="btn btn-sm mt-2" @click="fetchSectorRotation">刷新</button>
+            </div>
           </div>
-          <div v-if="sellResult" class="mt-3 p-3 rounded text-sm" :class="sellResult.should_sell ? (sellResult.level==='strong_sell'?'text-red':'text-amber') : 'text-green'" style="border:1px solid currentColor; background:rgba(0,0,0,0.3);">
-            <div class="font-bold text-base">[[ sellResult.advice ]]</div>
-            <div v-for="r in sellResult.reasons">• [[ r ]]</div>
-            <div class="text-sm text-sub mt-1">买入¥[[ sellResult.buy_price ]] → 现价¥[[ sellResult.current_price ]] ([[ sellResult.profit_pct>0?'+':'' ]][[ sellResult.profit_pct ]]%) | 信号:[[ sellResult.signal ]] | RSI:[[ sellResult.rsi ]]</div>
-          </div>
-        </div>
-        <div v-if="message" class="card text-sm">[[ message ]]</div>
-        <div v-if="stocks.length && status==='ok'" class="text-sm text-sub mt-2">扫描 <b class="text-amber">[[ total ]]</b> 只 | 信号 <b class="text-amber">[[ stocks.length ]]</b> 个 <span v-if="cached" class="text-xs text-sub ml-2">(缓存结果)</span></div>
-        <div v-if="stocks.length && status==='ok'" class="overflow-y-auto" style="max-height:55vh;">
-          <div v-for="(s,i) in stocks" :key="i" class="card">
-            <div class="flex justify-between mb-2">
+
+          <!-- Main scan area -->
+          <div style="flex:1;min-width:0;">
+            <div class="flex justify-between items-center mb-2">
               <div>
-                <span class="text-[#444] text-lg font-mono font-bold mr-2">#[[ i+1 ]]</span>
-                <span class="text-amber font-mono font-bold text-xl">[[ s.code ]]</span>
-                <span class="ml-2 text-lg">[[ s.name ]]</span>
-                <span class="ml-2 text-sm px-2 py-0.5 border rounded font-mono" :class="s.change_pct>0?'text-green border-green':'text-red border-red'">[[ s.change_pct>0?'+':'' ]][[ s.change_pct ]]%</span>
-                <div class="text-2xl font-bold font-mono mt-1">¥ [[ s.price ]]</div>
+                <button class="btn btn-primary" @click="executeScan" :disabled="loading">
+                  [[ loading ? '扫描中...' : '开始扫描' ]]
+                </button>
+                <span class="text-xs text-sub ml-2">
+                  [[ status==='non_trading' ? '今日休市' : '' ]]
+                  <span v-if="stocks.length && status==='ok'">
+                    共 <b style="color:var(--amber)">[[ total ]]</b> 只 | 信号 <b style="color:var(--amber)">[[ stocks.length ]]</b> 个
+                    <span v-if="cached" class="text-muted ml-1">(缓存)</span>
+                  </span>
+                </span>
               </div>
-              <div class="text-center">
-                <div class="text-3xl font-black font-mono" :class="s.signal>=75?'text-green':s.signal>=55?'text-amber':'text-sub'">[[ s.signal ]]</div>
-                <div class="text-xs font-bold px-2 py-0.5 rounded mt-1" :class="s.signal>=75?'bg-green-900/50 text-green border border-green/30':s.signal>=65?'bg-amber-900/50 text-amber border border-amber/30':s.signal>=50?'bg-blue-900/50 text-blue border border-blue/30':'text-sub'">
-                  [[ s.signal>=75?'🔥 强烈买入':s.signal>=65?'📈 建议买入':s.signal>=50?'👀 观察':'⚪ 弱信号' ]]
+            </div>
+
+            <div v-if="message" class="alert alert-info mb-2">[[ message ]]</div>
+
+            <!-- Stock list -->
+            <div v-if="stocks.length && status==='ok'" class="overflow-y-auto" style="max-height:calc(100vh - 250px);">
+              <div v-for="(s,i) in stocks" :key="i" class="card" style="margin-bottom:8px;">
+                <div class="flex justify-between items-start">
+                  <div style="flex:1;">
+                    <div class="flex items-center gap-2 mb-1">
+                      <span class="font-mono font-bold" style="color:var(--amber);font-size:16px;">[[ s.code ]]</span>
+                      <span class="text-sm">[[ s.name ]]</span>
+                      <span class="text-xs font-mono" :class="s.change_pct>0?'price-up':'price-down'">[[ s.change_pct>0?'+':'' ]][[ s.change_pct ]]%</span>
+                      <span class="font-mono font-bold">[[ s.price ]]</span>
+                    </div>
+                    <div class="text-xs text-sub mb-2">[[ s.priority_reason ]]</div>
+                    <!-- Strategy scores mini -->
+                    <div class="grid-4 gap-1" v-if="s.strategy_scores">
+                      <div v-for="(val,name) in s.strategy_scores" :key="name" class="text-xs">
+                        <div class="flex justify-between"><span class="text-muted">[[ name ]]</span><span :class="val>=15?'price-up':val>=8?'text-amber':'text-muted'">[[ val ]]</span></div>
+                        <div class="strategy-bar"><div class="strategy-fill" :style="{width:val/25*100+'%'}"></div></div>
+                      </div>
+                    </div>
+                    <!-- AI Decision -->
+                    <div v-if="s.ai_decision" class="mt-2 p-2 rounded text-xs" :class="s.ai_decision==='BUY'?'signal-strong':'signal-weak'">
+                      🤖 AI: [[ s.ai_decision==='BUY'?'买入':'观望' ]] | 技术[[ s.ai_technical_score ]] 基本[[ s.ai_fundamental_score ]] 风控[[ s.ai_risk_score ]]
+                      <span class="text-sub">[[ s.ai_summary ]]</span>
+                    </div>
+                    <!-- Sectors -->
+                    <div class="flex flex-wrap gap-1 mt-2">
+                      <span v-for="sec in s.sectors" class="tag">[[ sec ]]</span>
+                      <span class="tag text-muted" v-if="s.basic_info.行业">[[ s.basic_info.行业 ]]</span>
+                      <span class="tag text-muted" v-if="s.basic_info.总市值">市值 [[ s.basic_info.总市值 ]]</span>
+                    </div>
+                  </div>
+                  <!-- Signal score -->
+                  <div class="text-center" style="min-width:90px;">
+                    <div class="font-mono" style="font-size:32px;font-weight:700;" :class="s.signal>=75?'price-up':s.signal>=55?'text-amber':'text-muted'">[[ s.signal ]]</div>
+                    <div :class="['signal-badge', s.signal>=75?'signal-strong':s.signal>=65?'signal-buy':s.signal>=50?'signal-watch':'signal-weak']">
+                      [[ s.signal>=75?'强烈买入':s.signal>=65?'建议买入':s.signal>=50?'观察':'弱信号' ]]
+                    </div>
+                    <div class="text-xs text-muted mt-1">[[ s.position_advice ]]</div>
+                  </div>
                 </div>
-                <div class="text-sm text-sub mt-1">[[ s.position_advice ]]</div>
-              </div>
-            </div>
-            <div class="text-amber text-base font-bold mb-2">📌 [[ s.priority_reason ]]</div>
-            <div v-if="s.strategy_scores" class="mb-2 bg-[#0a0a0a] p-2 rounded">
-              <div class="text-sm text-sub mb-1">策略雷达</div>
-              <div class="grid-4">
-                <div v-for="(val,name) in s.strategy_scores" :key="name" class="text-sm text-center">
-                  <div class="mb-1">[[ name ]]</div>
-                  <div class="strategy-bar"><div class="strategy-fill" :style="{width:val/25*100+'%'}"></div></div>
-                  <div class="text-sub mt-1">[[ val ]]/25</div>
+                <!-- Actions -->
+                <div class="flex gap-1 mt-2">
+                  <button class="btn btn-primary btn-sm" @click="buyStock(s.code,s.price)">买入</button>
+                  <button class="btn btn-sm" @click="showKline(s.code)">K线</button>
+                  <button class="btn btn-sm" @click="showFactorDetail(s)">因子</button>
                 </div>
               </div>
             </div>
-            <div class="grid-4 text-sm mb-2">
-              <div class="bg-[#0a0a0a] p-2 rounded"><span class="text-sub">RSI</span><br>[[ s.rsi ]]</div>
-              <div class="bg-[#0a0a0a] p-2 rounded"><span class="text-sub">ADX</span><br>[[ s.adx ]]</div>
-              <div class="bg-[#0a0a0a] p-2 rounded"><span class="text-sub">MACD柱</span><br>[[ s.macd_hist ]]</div>
-              <div class="bg-[#0a0a0a] p-2 rounded"><span class="text-sub">残差Z</span><br>[[ s.resid_z ]]</div>
-            </div>
-            <div v-if="s.ai_decision" class="mt-2 p-2 rounded" :class="s.ai_decision==='BUY'?'bg-green-900/20 border border-green-500/30':'bg-red-900/20 border border-red-500/30'">
-              <div class="text-sm font-bold" :class="s.ai_decision==='BUY'?'text-green':'text-red'">
-                🤖 AI委员会: [[ s.ai_decision==='BUY'?'✅ 建议买入':'❌ 不建议买入' ]]
-              </div>
-              <div class="text-xs text-sub mt-1">[[ s.ai_summary ]]</div>
-              <div class="grid-4 text-xs mt-1">
-                <div>技术: [[ s.ai_technical_score ]]分</div>
-                <div>基本面: [[ s.ai_fundamental_score ]]分</div>
-                <div>风控: [[ s.ai_risk_score ]]分</div>
-                <div>仓位: [[ s.ai_position_pct ]]%</div>
+            <div v-if="!stocks.length && !loading && fetched && status==='ok'" class="card text-center text-sub py-10">暂无符合条件的信号</div>
+          </div>
+
+          <!-- Right sidebar -->
+          <div style="width:260px;min-width:220px;flex-shrink:0;">
+            <!-- Heatmap -->
+            <div class="card">
+              <div class="card-header">板块热力</div>
+              <div class="flex flex-wrap gap-1 overflow-y-auto" style="max-height:200px;">
+                <span v-for="h in heatmapData.slice(0,20)" class="text-xs px-2 py-0.5 font-mono rounded" :class="h.涨跌幅>0?'price-up':'price-down'" style="background:rgba(255,255,255,0.03);">[[ h.板块名称 ]] [[ h.涨跌幅>0?'+':'' ]][[ h.涨跌幅 ]]%</span>
               </div>
             </div>
-            <div class="text-sm text-sub mb-2">市值:[[ s.basic_info.总市值 ]] | PE:[[ s.basic_info.市盈率 ]] | [[ s.basic_info.行业 ]]</div>
-            <div class="flex flex-wrap gap-1 mb-2"><span v-for="sec in s.sectors" class="tag">[[ sec ]]</span></div>
-            <button class="btn btn-sm" @click="buyStock(s.code,s.price)">📝 买入</button>
-            <button class="btn btn-sm ml-2" @click="showKline(s.code)" style="border-color:var(--blue);color:var(--blue);background:linear-gradient(180deg,#0a0c14,#060810);">📈 K线</button>
-            <button class="btn btn-sm ml-2" @click="showFactorDetail(s)" style="border-color:var(--green);color:var(--green);background:linear-gradient(180deg,#081408,#040c04);">🧬 因子得分</button>
+
+            <!-- Top money flow -->
+            <div class="card">
+              <div class="card-header">主力资金 ([[ moneyflowDate ]])</div>
+              <div class="text-xs font-bold price-up mb-1">流入</div>
+              <div v-for="m in moneyIn.slice(0,5)" class="text-xs flex justify-between py-0.5" style="border-bottom:1px solid rgba(42,46,57,0.3);">
+                <span>[[ m.板块名称 ]]</span><span class="font-mono price-up">+[[ fv(m.主力净流入) ]]</span>
+              </div>
+              <div class="text-xs font-bold price-down mt-2 mb-1">流出</div>
+              <div v-for="m in moneyOut.slice(0,5)" class="text-xs flex justify-between py-0.5" style="border-bottom:1px solid rgba(42,46,57,0.3);">
+                <span>[[ m.板块名称 ]]</span><span class="font-mono price-down">[[ fv(m.主力净流入) ]]</span>
+              </div>
+            </div>
+
+            <!-- News -->
+            <div class="card">
+              <div class="card-header">市场新闻</div>
+              <div class="overflow-y-auto" style="max-height:300px;">
+                <div v-for="(n,idx) in newsList" :key="idx" class="news-item" @click="n.expanded=!n.expanded">
+                  <span class="tag text-muted mr-1">[[ n.source ]]</span>
+                  <span>[[ n.title ]]</span>
+                  <div v-if="n.expanded && n.content" class="text-xs text-sub mt-1">[[ n.content ]]</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-        <div v-if="!stocks.length && !loading && fetched && status==='ok'" class="card text-center text-sub py-10 text-base">暂无信号</div>
       </div>
 
-      <!-- 右侧 20% 新闻+信号历史 -->
-      <div class="w-20" style="width:20%; min-width:240px;">
+      <!-- ==================== 持仓管理 ==================== -->
+      <div v-show="tab==='pos'" style="max-width:1000px;">
+        <!-- Stats -->
+        <div class="grid-3 mb-3">
+          <div class="stat-card">
+            <div class="stat-label">总交易</div>
+            <div class="stat-num text-amber">[[ stats.total_trades ]]</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">胜率</div>
+            <div class="stat-num" :class="stats.win_rate>=50?'price-up':'price-down'">[[ stats.win_rate ]]%</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">累计盈亏</div>
+            <div class="stat-num" :class="stats.total_profit>=0?'price-up':'price-down'">[[ stats.total_profit ]]</div>
+          </div>
+        </div>
+
+        <!-- Positions -->
         <div class="card">
-          <div class="text-base text-amber font-bold mb-2">📰 市场新闻</div>
-          <div class="overflow-y-auto" style="max-height:40vh;">
-            <div v-for="(n,idx) in newsList" :key="idx" class="news-item" @click="n.expanded=!n.expanded">
-              <div class="flex items-center gap-1 mb-0.5"><span class="text-xs px-2 py-0.5 rounded" :class="n.source.includes('联播')?'text-red bg-red-900/20':'text-amber bg-amber-900/20'">[[ n.source ]]</span><span class="text-xs text-sub">[[ n.time ]]</span></div>
-              <div class="text-sm">[[ n.title ]]</div>
-              <div v-if="n.expanded && n.content" class="text-xs text-sub mt-1">[[ n.content ]]</div>
+          <div class="card-header">当前持仓</div>
+          <div v-if="stats.positions.length">
+            <table class="data-table w-full">
+              <thead><tr><th>代码</th><th>买入价</th><th>现价</th><th>盈亏</th><th class="text-right">操作</th></tr></thead>
+              <tbody>
+                <tr v-for="p in stats.positions" :key="p.code">
+                  <td><span class="font-mono font-bold text-amber">[[ p.code ]]</span></td>
+                  <td class="font-mono">[[ p.buy_price ]]</td>
+                  <td class="font-mono">[[ p.current_price || '--' ]]</td>
+                  <td class="font-mono" :class="(p.float_profit||0)>=0?'price-up':'price-down'">[[ (p.float_profit||0)>=0?'+':'' ]][[ p.float_profit||'--' ]]%</td>
+                  <td class="text-right">
+                    <button class="btn btn-sm btn-danger" @click="quickSell(p.code)">卖出</button>
+                    <button class="btn btn-sm ml-1" @click="sellCode=p.code;sellPrice=p.buy_price;checkSell()">检查</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else class="text-center text-sub py-6">暂无持仓</div>
+        </div>
+
+        <!-- Trade history -->
+        <div class="card mt-2" v-if="trades.length">
+          <div class="card-header">交易记录</div>
+          <table class="data-table w-full">
+            <thead><tr><th>日期</th><th>代码</th><th>买入</th><th>卖出</th><th>盈亏</th><th>收益率</th></tr></thead>
+            <tbody>
+              <tr v-for="t in trades.slice().reverse().slice(0,30)" :key="t.buy_time">
+                <td class="text-xs text-sub">[[ t.sell_time ]]</td>
+                <td class="font-mono font-bold text-amber">[[ t.code ]]</td>
+                <td class="font-mono">[[ t.buy_price ]]</td>
+                <td class="font-mono">[[ t.sell_price ]]</td>
+                <td class="font-mono" :class="t.profit>=0?'price-up':'price-down'">[[ t.profit>=0?'+':'' ]][[ t.profit ]]</td>
+                <td class="font-mono" :class="t.profit>=0?'price-up':'price-down'">[[ t.profit_pct ]]%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Equity charts -->
+        <div class="card mt-2" v-if="equityCurveData.length">
+          <div class="card-header">权益曲线</div>
+          <div id="equityChart" style="width:100%;height:300px;"></div>
+        </div>
+        <div class="card mt-2" v-if="equityCurveData.length">
+          <div class="card-header">回撤分析</div>
+          <div id="drawdownChart" style="width:100%;height:200px;"></div>
+        </div>
+        <div class="card mt-2" v-if="monthlyPnlData.length">
+          <div class="card-header">月度盈亏</div>
+          <div id="monthlyChart" style="width:100%;height:260px;"></div>
+        </div>
+      </div>
+
+      <!-- ==================== 复盘日记 ==================== -->
+      <div v-show="tab==='diary'" style="max-width:800px;">
+        <div class="card">
+          <div class="card-header">新增复盘</div>
+          <textarea v-model="newDiary" rows="5" class="w-full" placeholder="记录今日操作、心得、反思..."></textarea>
+          <div class="flex justify-between items-center mt-2">
+            <div class="text-xs text-sub" v-if="newDiary.trim()">
+              提醒：<span v-for="(r,ri) in previewReminders" :key="ri" class="tag">[[ r ]]</span>
+            </div>
+            <button class="btn btn-primary btn-sm" @click="saveDiary" :disabled="!newDiary.trim()">保存</button>
+          </div>
+        </div>
+        <div v-if="diaryList.length" class="card mt-2">
+          <div class="card-header">历史复盘</div>
+          <div v-for="d in diaryList.slice().reverse()" :key="d.id" class="p-3 mb-2" style="border-left:3px solid var(--amber);background:rgba(240,185,11,0.03);border-radius:0 4px 4px 0;">
+            <div class="flex justify-between text-xs text-sub mb-2"><span>#[[ d.id ]]</span><span>[[ d.date ]]</span></div>
+            <div class="text-sm" style="white-space:pre-wrap;">[[ d.text ]]</div>
+            <div class="mt-2 flex gap-1 flex-wrap"><span v-for="r in d.reminder" class="tag">[[ r ]]</span></div>
+            <button class="btn btn-sm mt-2" @click="deleteDiary(d.id)">删除</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 工具箱 ==================== -->
+      <div v-show="tab==='tools'" style="max-width:1000px;">
+        <!-- Backtest -->
+        <div class="card">
+          <div class="card-header">策略回测</div>
+          <div class="flex gap-2 items-end flex-wrap">
+            <div><label class="text-xs text-sub">天数</label><br><input v-model="backtestDays" style="width:70px;"></div>
+            <div><label class="text-xs text-sub">选股数</label><br><input v-model="backtestTopN" style="width:70px;"></div>
+            <div><label class="text-xs text-sub">模式</label><br>
+              <select v-model="backtestMode">
+                <option value="simple">简单回测</option><option value="rolling">滚动窗口验证</option>
+              </select>
+            </div>
+            <button class="btn btn-primary btn-sm" @click="runBacktest" :disabled="backtesting">[[ backtesting?'回测中...':'开始回测' ]]</button>
+          </div>
+          <div v-if="backtestResult" class="mt-3">
+            <div v-if="backtestResult.error" class="text-sm price-down">[[ backtestResult.error ]]</div>
+            <div v-else>
+              <div v-if="backtestResult.overfit_warning" class="alert text-xs mb-2" :class="backtestResult.overfit_warning.level==='high'?'price-down':backtestResult.overfit_warning.level==='medium'?'text-amber':'price-up'">
+                ⚠ [[ backtestResult.overfit_warning.message ]]
+              </div>
+              <div class="grid-3">
+                <div class="stat-card"><div class="stat-label">总交易</div><div class="stat-num text-amber">[[ backtestResult.total_trades ]]</div></div>
+                <div class="stat-card"><div class="stat-label">胜率</div><div class="stat-num" :class="backtestResult.win_rate>=50?'price-up':'price-down'">[[ backtestResult.win_rate ]]%</div></div>
+                <div class="stat-card"><div class="stat-label">累计收益</div><div class="stat-num" :class="backtestResult.cum_return>=0?'price-up':'price-down'">[[ backtestResult.cum_return ]]%</div></div>
+              </div>
             </div>
           </div>
         </div>
+
+        <!-- Strategy comparison -->
         <div class="card mt-2">
-          <div class="text-base text-amber font-bold mb-2">📋 信号历史</div>
-          <div class="overflow-y-auto text-xs" style="max-height:30vh;">
-            <div v-for="s in signalsHistory" :key="s.time" class="py-1 border-b border-[#151515]">[[ s.time ]] [[ s.code ]] [[ s.signal ]]分</div>
-          </div>
-          <button class="btn btn-sm mt-2" @click="fetchSignalsHistory">刷新</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 持仓管理 -->
-    <div v-show="tab==='pos'" class="max-w-4xl p-4">
-      <div class="card"><div class="text-xl text-amber font-bold mb-4">📊 统计</div>
-        <div class="grid-2">
-          <div class="stat-card"><div class="stat-label">总交易</div><div class="stat-num text-amber">[[ stats.total_trades ]]</div></div>
-          <div class="stat-card"><div class="stat-label">胜率</div><div class="stat-num" :class="stats.win_rate>=50?'text-green':'text-red'">[[ stats.win_rate ]]%</div></div>
-          <div class="stat-card"><div class="stat-label">累计盈亏</div><div class="stat-num" :class="stats.total_profit>=0?'text-green':'text-red'">¥[[ stats.total_profit ]]</div></div>
-          <div class="stat-card"><div class="stat-label">浮动盈亏</div><div class="stat-num" :class="stats.floating_pnl>=0?'text-green':'text-red'">¥[[ stats.floating_pnl ]]</div></div>
-        </div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">💼 持仓</div>
-        <div v-if="stats.positions.length">
-          <div class="grid-4 text-sm text-sub font-bold pb-2" style="border-bottom:2px solid #1a1a1a;"><span>代码</span><span>买入价</span><span>盈亏</span><span>操作</span></div>
-          <div v-for="p in stats.positions" :key="p.code" class="grid-4 text-base py-2" style="border-bottom:1px solid #0d0d0d; align-items:center;">
-            <span class="text-amber font-mono font-bold">[[ p.code ]]</span>
-            <span>¥[[ p.buy_price ]] <span class="text-sub text-xs">→ [[ p.current_price || '--' ]]</span></span>
-            <span :class="(p.float_profit||0)>=0?'text-green':'text-red'" class="font-mono">[[ (p.float_profit||0)>=0?'+':'' ]][[ p.float_profit||'--' ]]%</span>
-            <div class="flex gap-1">
-              <button class="btn btn-sm" @click="quickSell(p.code)">卖出</button>
-              <button class="btn btn-sm" @click="sellCode=p.code;sellPrice=p.buy_price;checkSell()" style="border-color:var(--blue);color:var(--blue);background:linear-gradient(180deg,#0a0c14,#060810);">检查</button>
-            </div>
+          <div class="card-header">策略对比</div>
+          <button class="btn btn-sm" @click="loadStrategyComparison">加载</button>
+          <div v-if="strategyComparison" class="mt-2 overflow-y-auto" style="max-height:400px;">
+            <table class="data-table w-full text-xs">
+              <thead><tr><th>策略</th><th>交易数</th><th>胜率</th><th>平均收益</th><th>累计收益</th></tr></thead>
+              <tbody>
+                <tr v-for="s in strategyComparison" :key="s.strategy">
+                  <td class="font-bold">[[ s.strategy ]]</td>
+                  <td>[[ s.total_trades ]]</td>
+                  <td :class="s.win_rate>=50?'price-up':'price-down'">[[ s.win_rate ]]%</td>
+                  <td :class="s.avg_return>=0?'price-up':'price-down'">[[ s.avg_return ]]%</td>
+                  <td :class="s.cum_return>=0?'price-up':'price-down'">[[ s.cum_return ]]%</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
-        <div v-else class="text-center text-sub py-8">暂无持仓</div>
-      </div>
-      <div class="card mt-3" v-if="trades.length"><div class="text-xl text-amber font-bold mb-4">📋 历史交易</div>
-        <div v-for="t in trades.slice().reverse().slice(0,20)" :key="t.buy_time" class="text-sm py-1" style="border-bottom:1px solid #0d0d0d;"><span class="text-amber font-mono font-bold">[[ t.code ]]</span> 买¥[[ t.buy_price ]] → 卖¥[[ t.sell_price ]] <span :class="t.profit>=0?'text-green':'text-red'" class="font-mono ml-2">[[ t.profit>=0?'+':'' ]]¥[[ t.profit ]] ([[ t.profit_pct ]]%)</span> <span class="text-sub ml-2">[[ t.sell_time ]]</span></div>
-      </div>
-      <div class="card mt-3" v-if="equityCurveData.length">
-        <div class="text-xl text-amber font-bold mb-4">📈 权益曲线</div>
-        <div id="equityChart" style="width:100%;height:300px;"></div>
-      </div>
-      <div class="card mt-3" v-if="equityCurveData.length">
-        <div class="text-xl text-amber font-bold mb-4">📉 回撤分析</div>
-        <div id="drawdownChart" style="width:100%;height:220px;"></div>
-      </div>
-      <div class="card mt-3" v-if="monthlyPnlData.length">
-        <div class="text-xl text-amber font-bold mb-4">📊 月度盈亏</div>
-        <div id="monthlyChart" style="width:100%;height:280px;"></div>
-      </div>
-    </div>
 
-    <!-- 复盘日记 -->
-    <div v-show="tab==='diary'" class="max-w-4xl p-4">
-      <div class="card"><div class="text-xl text-amber font-bold mb-4">📝 新增复盘</div>
-        <textarea v-model="newDiary" rows="6" class="w-full" placeholder="写下今日复盘内容..."></textarea>
-        <div class="flex justify-between items-center mt-3">
-          <div v-if="newDiary.trim()" class="text-sm text-sub">提醒：<span v-for="(r,ri) in previewReminders" :key="ri" class="tag ml-1">💡 [[ r ]]</span></div>
-          <button class="btn btn-sm" @click="saveDiary" :disabled="!newDiary.trim()">保存</button>
-        </div>
-      </div>
-      <div v-if="diaryList.length" class="card mt-3"><div class="text-xl text-amber font-bold mb-4">📋 历史复盘</div>
-        <div v-for="d in diaryList.slice().reverse()" :key="d.id" style="border-left:4px solid var(--amber);padding:14px;margin-bottom:12px;background:#0d0d0d;border-radius:0 8px 8px 0;">
-          <div class="flex justify-between text-sm text-sub mb-2"><span>#[[ d.id ]]</span><span>[[ d.date ]]</span></div>
-          <div class="text-base" style="white-space:pre-wrap;">[[ d.text ]]</div>
-          <div class="mt-3 flex gap-1 flex-wrap"><span v-for="r in d.reminder" class="tag">💡 [[ r ]]</span></div>
-          <button class="btn btn-sm mt-3" @click="deleteDiary(d.id)">删除</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- 工具箱 -->
-    <div v-show="tab==='tools'" class="max-w-4xl p-4">
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">📈 策略回测</div>
-        <div class="flex gap-2 items-end flex-wrap">
-          <div><label class="text-sm text-sub">天数</label><br><input v-model="backtestDays" style="width:80px;"></div>
-          <div><label class="text-sm text-sub">选股数</label><br><input v-model="backtestTopN" style="width:80px;"></div>
-          <div><label class="text-sm text-sub">模式</label><br><select v-model="backtestMode" style="background:#0a0a0a;border:1px solid var(--border);color:var(--text);padding:10px;border-radius:4px;"><option value="simple">简单回测</option><option value="rolling">滚动窗口验证</option></select></div>
-          <button class="btn btn-sm" @click="runBacktest" :disabled="backtesting">[[ backtesting ? '⏳ 回测中...' : '开始回测' ]]</button>
-        </div>
-        <div v-if="backtestResult" class="mt-3 text-sm">
-          <div v-if="backtestResult.error" class="text-red">[[ backtestResult.error ]]</div>
-          <div v-else-if="backtestResult.mode==='rolling'">
-            <div class="text-amber font-bold mb-2">🔄 滚动窗口验证 (训练[[ backtestResult.train_days ]]天 / 测试[[ backtestResult.test_days ]]天)</div>
-            <div v-if="backtestResult.overfit_warning" class="mb-3 p-2 rounded text-sm" :class="backtestResult.overfit_warning.level==='high'?'bg-red-900/20 border border-red-500/30 text-red':backtestResult.overfit_warning.level==='medium'?'bg-amber-900/20 border border-amber/30 text-amber':'bg-green-900/20 border border-green-500/30 text-green'">
-              ⚠ [[ backtestResult.overfit_warning.message ]]
-            </div>
-            <div class="grid-2">
-              <div class="card"><div class="text-amber font-bold mb-2">📊 样本内 (训练集)</div>
-                <div v-if="backtestResult.in_sample">
-                  <div>交易: [[ backtestResult.in_sample.total_trades ]]笔</div>
-                  <div>胜率: <span :class="backtestResult.in_sample.win_rate>=50?'text-green':'text-red'">[[ backtestResult.in_sample.win_rate ]]%</span></div>
-                  <div>平均收益: [[ backtestResult.in_sample.avg_return ]]%</div>
-                  <div>累计收益: [[ backtestResult.in_sample.cum_return ]]%</div>
-                </div><div v-else class="text-sub">数据不足</div>
-              </div>
-              <div class="card"><div class="text-amber font-bold mb-2">🎯 样本外 (测试集)</div>
-                <div v-if="backtestResult.out_sample">
-                  <div>交易: [[ backtestResult.out_sample.total_trades ]]笔</div>
-                  <div>胜率: <span :class="backtestResult.out_sample.win_rate>=50?'text-green':'text-red'">[[ backtestResult.out_sample.win_rate ]]%</span></div>
-                  <div>平均收益: [[ backtestResult.out_sample.avg_return ]]%</div>
-                  <div>累计收益: [[ backtestResult.out_sample.cum_return ]]%</div>
-                </div><div v-else class="text-sub">数据不足</div>
+        <!-- Factor evolution (simplified) -->
+        <div class="card mt-2">
+          <div class="card-header">因子进化</div>
+          <div class="text-xs text-sub mb-2">AI 自动发现和优化量化因子</div>
+          <button class="btn btn-primary btn-sm" @click="evolveFactors" :disabled="evolving">[[ evolving?'进化中...':'启动进化' ]]</button>
+          <div v-if="evolveResult" class="mt-2 text-sm">
+            <div v-if="evolveResult.error" class="price-down">[[ evolveResult.error ]]</div>
+            <div v-else>
+              <div class="price-up mb-1">[[ evolveResult.message || '进化完成' ]]</div>
+              <div v-if="evolveResult.new_factors" class="text-xs text-sub">
+                新增因子: [[ evolveResult.new_factors.join(', ') ]]
               </div>
             </div>
           </div>
-          <div v-else>
-            <div class="grid-2">
-              <div class="stat-card"><div class="stat-num text-amber">[[ backtestResult.total_trades ]]</div><div>总交易</div></div>
-              <div class="stat-card"><div class="stat-num" :class="backtestResult.win_rate>=50?'text-green':'text-red'">[[ backtestResult.win_rate ]]%</div><div>胜率</div></div>
-              <div class="stat-card"><div class="stat-num" :class="backtestResult.avg_return>=0?'text-green':'text-red'">[[ backtestResult.avg_return ]]%</div><div>平均收益</div></div>
-              <div class="stat-card"><div class="stat-num" :class="backtestResult.cum_return>=0?'text-green':'text-red'">[[ backtestResult.cum_return ]]%</div><div>累计收益</div></div>
-            </div>
-            <div v-if="backtestResult.ai_interpretation" class="bg-[#0a0a0a] p-3 rounded border border-amber/20 mt-3">
-              <div class="text-sm text-amber font-bold mb-1">🤖 AI解读</div>
-              <div class="text-sm">[[ backtestResult.ai_interpretation ]]</div>
-            </div>
-          </div>
         </div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">⚙ 策略权重更新</div>
-        <button class="btn btn-sm" @click="updateWeights">更新权重</button>
-        <div v-if="weightsResult" class="mt-2 text-sm">[[ JSON.stringify(weightsResult) ]]</div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">📊 数据质量</div>
-        <button class="btn btn-sm" @click="checkDataQuality">检查</button>
-        <div v-if="dataQuality" class="mt-2 text-sm">状态: [[ dataQuality.status ]]</div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">🐳 Docker部署</div>
-        <button class="btn btn-sm" @click="getDockerfile">获取Dockerfile</button>
-        <div v-if="dockerfile" class="mt-2 text-sm"><pre>[[ dockerfile ]]</pre></div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">🧬 因子库管理</div>
-        <button class="btn btn-sm" @click="loadFactorRegistry">📋 加载因子库</button>
-        <button class="btn btn-sm ml-2" @click="loadFactorRank">📊 因子排名</button>
-        <div v-if="factorRegistry.length" class="mt-3 overflow-y-auto" style="max-height:50vh;">
-          <div class="text-xs text-sub mb-2">共 [[ factorRegistry.length ]] 个因子 | 活跃: [[ factorRegistry.filter(f=>f.active).length ]]</div>
-          <div v-for="f in factorRegistry" :key="f.name" class="flex items-center justify-between py-1 text-xs" style="border-bottom:1px solid #151515;">
-            <span class="w-24 text-amber">[[ f.name ]]</span>
-            <span class="w-12 text-sub">[[ f.category ]]</span>
-            <span class="w-12 text-center" :class="f.ic_30d>0.03?'text-green':f.ic_30d<-0.03?'text-red':'text-sub'">IC:[[ (f.ic_30d||0).toFixed(3) ]]</span>
-            <span class="w-10 text-center text-sub">W:[[ (f.weight||1).toFixed(1) ]]</span>
-            <span class="w-10 text-center" :class="f.active?'text-green':'text-sub'">[[ f.active?'启用':'禁用' ]]</span>
-            <button class="btn btn-sm text-xs px-2 py-0.5" @click="backtestFactor(f.name)">回测</button>
-            <button class="btn btn-sm text-xs px-2 py-0.5" @click="toggleFactor(f.name, !f.active)">[[ f.active?'禁用':'启用' ]]</button>
-          </div>
-        </div>
-        <div v-if="factorBacktestResult" class="mt-3 text-sm p-3 rounded" style="background:#0a0a0a;border:1px solid var(--amber);">
-          <div class="text-amber font-bold mb-1">回测: [[ factorBacktestResult.factor_name ]]</div>
-          <div v-if="factorBacktestResult.error" class="text-red">[[ factorBacktestResult.error ]]</div>
-          <div v-else>
-            <div>IC: [[ factorBacktestResult.ic_mean ]] | 样本: [[ factorBacktestResult.sample_count ]]只</div>
-            <div>多空收益: [[ factorBacktestResult.long_short_return ]]% | 命中率: [[ factorBacktestResult.hit_rate ]]%</div>
-            <div class="text-xs text-sub">[[ factorBacktestResult.ic_sign ]]</div>
-            <div v-if="factorBacktestResult.group_returns" class="mt-1">
-              <span class="text-xs text-sub">分组收益: </span>
-              <span v-for="(gr, gi) in factorBacktestResult.group_returns" :key="gi" class="text-xs mr-1" :class="gr>0?'text-green':'text-red'">G[[ gi+1 ]]:[[ gr ]]%</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">🔄 指标周期检测</div>
-        <button class="btn btn-sm" @click="loadIndicatorCycle">🔍 检测周期</button>
-        <button class="btn btn-sm ml-2" @click="loadMarketMatch">📊 市场匹配</button>
-        <div v-if="indicatorCycleList.length" class="mt-3 overflow-y-auto" style="max-height:40vh;">
-          <div class="text-xs text-sub mb-2">共 [[ indicatorCycleList.length ]] 个因子 | 有效: [[ indicatorCycleList.filter(f=>f.status==='effective').length ]] | 失效: [[ indicatorCycleList.filter(f=>f.status==='ineffective').length ]] | 反转: [[ indicatorCycleList.filter(f=>f.status==='reversed').length ]]</div>
-          <div v-for="f in indicatorCycleList" :key="f.name" class="flex items-center justify-between py-1 text-xs" style="border-bottom:1px solid #151515;">
-            <span class="w-24 text-amber">[[ f.name ]]</span>
-            <span class="w-12 text-sub">[[ f.category ]]</span>
-            <span class="w-8 h-2 rounded" :class="f.status==='effective'?'bg-green':f.status==='reversed'?'bg-red':f.status==='ineffective'?'bg-yellow':'bg-sub'"></span>
-            <span class="w-16 text-center" :class="f.status==='effective'?'text-green':f.status==='reversed'?'text-red':'text-sub'">[[ f.status ]]</span>
-            <span class="w-16 text-right font-mono" :class="(f.ic_mean||0)>0.03?'text-green':(f.ic_mean||0)<-0.03?'text-red':'text-sub'">IC:[[ (f.ic_mean||0).toFixed(3) ]]</span>
-            <span class="w-32 text-sub text-right">[[ f.recommendation ]]</span>
-          </div>
-        </div>
-        <div v-if="marketMatch" class="mt-3 p-3 rounded" style="background:#0a0a0a;border:1px solid var(--amber);">
-          <div class="text-amber font-bold mb-1">当前环境: [[ marketMatch.environment ]] | 波动: [[ marketMatch.volatility ]]</div>
-          <div class="text-sm text-sub mb-2">[[ marketMatch.advice ]]</div>
-          <div v-if="marketMatch.weight_adjustments" class="flex flex-wrap gap-1">
-            <span v-for="(adj, name) in marketMatch.weight_adjustments" :key="name" class="text-xs px-2 py-0.5 rounded" :class="adj>1?'text-green bg-green-900/20':'text-red bg-red-900/20'">[[ name ]]:[[ adj>1?'+':'' ]][[ ((adj-1)*100).toFixed(0) ]]%</span>
-          </div>
-        </div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">📈 长期策略评估</div>
-        <div class="flex gap-2 mb-3">
-          <button class="btn btn-sm" @click="runLongTermEval(1)">1年</button>
-          <button class="btn btn-sm" @click="runLongTermEval(3)">3年</button>
-          <button class="btn btn-sm" @click="runLongTermEval(5)">5年</button>
-        </div>
-        <div v-if="longTermLoading" class="text-center text-sub py-3">⏳ 评估中...</div>
-        <div v-if="longTermResult && !longTermLoading" class="text-sm">
-          <div v-if="longTermResult.error" class="text-red">[[ longTermResult.error ]]</div>
-          <div v-else>
-            <div class="text-amber font-bold mb-2">评估周期: [[ longTermResult.years ]]年</div>
-            <div class="grid-2">
-              <div class="stat-card"><div class="stat-num text-green">[[ longTermResult.strategy.annual_return ]]%</div><div>策略年化收益</div></div>
-              <div class="stat-card"><div class="stat-num text-sub">[[ longTermResult.benchmark.annual_return ]]%</div><div>基准年化收益</div></div>
-              <div class="stat-card"><div class="stat-num" :class="longTermResult.comparison.excess_return>=0?'text-green':'text-red'">[[ longTermResult.comparison.excess_return>=0?'+':'' ]][[ longTermResult.comparison.excess_return ]]%</div><div>年化超额收益</div></div>
-              <div class="stat-card"><div class="stat-num text-amber">[[ longTermResult.strategy.sharpe_ratio ]]</div><div>夏普比率</div></div>
-            </div>
-            <div class="grid-2 mt-2">
-              <div class="stat-card"><div class="stat-num text-red">[[ longTermResult.strategy.max_drawdown ]]%</div><div>最大回撤</div></div>
-              <div class="stat-card"><div class="stat-num text-amber">[[ longTermResult.strategy.calmar_ratio ]]</div><div>Calmar比率</div></div>
-              <div class="stat-card"><div class="stat-num text-amber">[[ longTermResult.comparison.information_ratio ]]</div><div>信息比率</div></div>
-              <div class="stat-card"><div class="stat-num text-sub">[[ longTermResult.strategy.monthly_samples ]]</div><div>月度样本</div></div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">🔄 更新机制</div>
-        <button class="btn btn-sm" @click="gitUpdate">检查更新</button>
-        <div v-if="updateResult" class="mt-2 text-sm">[[ updateResult ]]</div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">📊 策略对比</div>
-        <button class="btn btn-sm" @click="loadStrategyComparison">加载对比</button>
-        <div v-if="strategyComparison" class="mt-3">
-          <div class="text-sm text-sub mb-2">基于 [[ strategyComparison.total_trades ]] 笔历史交易</div>
-          <div v-for="(stats, name) in strategyComparison.strategies" :key="name" class="flex items-center justify-between py-1 text-sm" style="border-bottom:1px solid #151515;">
-            <span class="w-20">[[ name ]]</span>
-            <div class="strategy-bar flex-1 mx-2"><div class="strategy-fill" :style="{width:stats.win_rate+'%'}"></div></div>
-            <span class="w-16 text-right" :class="stats.win_rate>=50?'text-green':'text-red'">[[ stats.win_rate ]]%</span>
-            <span class="w-16 text-right" :class="stats.avg_return>=0?'text-green':'text-red'">[[ stats.avg_return>0?'+':'' ]][[ stats.avg_return ]]%</span>
-            <span class="w-16 text-right text-sub">[[ stats.total_trades ]]笔</span>
-          </div>
-        </div>
-      </div>
-      <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">🎯 策略组合建议</div>
-        <button class="btn btn-sm" @click="loadStrategyCombo">获取建议</button>
-        <div v-if="strategyCombo" class="mt-3 text-sm">
-          <div class="text-amber font-bold mb-2">当前环境: [[ strategyCombo.environment ]] | [[ strategyCombo.combo.environment ]]</div>
-          <div class="mb-2"><span class="text-green font-bold">✅ 主力:</span> <span v-for="s in strategyCombo.combo.primary" class="tag mr-1">[[ s ]]</span></div>
-          <div class="mb-2"><span class="text-sub">🔶 辅助:</span> <span v-for="s in strategyCombo.combo.secondary" class="tag mr-1">[[ s ]]</span></div>
-          <div class="mb-2"><span class="text-red">❌ 避免:</span> <span v-for="s in strategyCombo.combo.avoid" class="tag mr-1">[[ s ]]</span></div>
-          <div class="text-amber mb-2">💰 建议仓位: [[ strategyCombo.combo.position ]]%</div>
-          <div class="text-sub">[[ strategyCombo.combo.advice ]]</div>
-        </div>
-      </div>
- <div class="card mt-3">
-  <div class="text-xl text-amber font-bold mb-4">🧬 因子进化</div>
-  <button class="btn btn-sm" @click="evolveFactors" :disabled="evolving">
-    [[ evolving ? '⏳ 进化中...' : '🚀 自动进化' ]]
-  </button>
-  <button class="btn btn-sm ml-2" @click="loadFactorStatus">📊 查看状态</button>
-  <div v-if="evolveResult" class="mt-3 text-sm">
-    <div v-if="evolveResult.error" class="text-red">[[ evolveResult.error ]]</div>
-    <div v-else-if="evolveResult.status==='rejected'" class="text-amber">
-      ⚠ [[ evolveResult.message ]]
-      <div class="text-xs text-sub mt-1">IC值: [[ evolveResult.ic_value ]] | 阈值: 0.03</div>
-    </div>
-    <div v-else class="text-green">
-      ✅ [[ evolveResult.message ]]
-      <div class="text-xs text-sub mt-1" v-if="evolveResult.new_factor">
-        新因子：[[ evolveResult.new_factor.name ]] | IC: [[ evolveResult.ic_value ]]
-      </div>
-    </div>
-  </div>
-  
-  <div v-if="factorStatus" class="mt-3">
-    <div class="text-sm text-amber font-bold mb-2">📊 因子表现</div>
-    <div v-for="(perf, name) in factorStatus.performance" :key="name" class="flex justify-between text-xs py-1 border-b border-[#151515]">
-      <span>[[ name ]]</span>
-      <span :class="perf.win_rate >= 55 ? 'text-green' : 'text-red'">
-        胜率:[[ perf.win_rate ]]% | IC:[[ perf.ic ]]
-      </span>
-    </div>
-  </div>
-</div>
 
+        <!-- Long term eval -->
+        <div class="card mt-2">
+          <div class="card-header">长期评估</div>
+          <div class="flex gap-2 items-end">
+            <button class="btn btn-sm" @click="years=1;runLongTermEval()">1年</button>
+            <button class="btn btn-sm" @click="years=3;runLongTermEval()">3年</button>
+            <button class="btn btn-sm" @click="years=5;runLongTermEval()">5年</button>
+          </div>
+          <div v-if="longTermResult" class="mt-2">
+            <div class="grid-3">
+              <div class="stat-card"><div class="stat-label">年化收益</div><div class="stat-num" :class="longTermResult.strategy.annual_return>=0?'price-up':'price-down'">[[ longTermResult.strategy.annual_return ]]%</div></div>
+              <div class="stat-card"><div class="stat-label">夏普比率</div><div class="stat-num text-amber">[[ longTermResult.strategy.sharpe_ratio ]]</div></div>
+              <div class="stat-card"><div class="stat-label">最大回撤</div><div class="stat-num price-down">[[ longTermResult.strategy.max_drawdown ]]%</div></div>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    </main>
 
-    <!-- 因子得分详情弹窗 -->
-    <div v-if="factorDetailVisible" class="fixed inset-0 z-50 flex items-center justify-center" style="background:rgba(0,0,0,0.85);" @click="factorDetailVisible=false">
-      <div class="rounded-lg p-4" style="background:var(--card);border:1px solid var(--green);max-width:600px;max-height:80vh;overflow:auto;width:90%;" @click.stop>
+    <!-- K-line modal -->
+    <div v-if="klineVisible" class="modal-overlay" @click.self="klineVisible=false" style="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:flex;align-items:center;justify-content:center;">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:800px;width:90%;max-height:90vh;overflow-y:auto;">
         <div class="flex justify-between items-center mb-3">
-          <span class="text-xl text-amber font-bold">🧬 [[ factorDetailCode ]] 因子得分详情</span>
-          <button class="btn btn-sm" @click="factorDetailVisible=false">关闭</button>
-        </div>
-        <div v-if="factorDetailLoading" class="text-center text-sub py-8">⏳ 分析中...</div>
-        <div v-else-if="factorDetailData && factorDetailData.length">
-          <div class="text-sm text-sub mb-2">综合评分: <span class="text-xl text-amber font-bold">[[ factorDetailSignal ]]</span> | [[ factorDetailReason ]]</div>
-          <div class="text-sm text-amber font-bold mb-2">🏆 贡献TOP3因子</div>
-          <div v-for="(fd, idx) in factorDetailData.slice(0,3)" :key="idx" class="p-2 mb-1 rounded" style="background:#0a0a0a;border:1px solid #1a1a1a;">
-            <div class="flex justify-between items-center">
-              <span class="text-base" :class="fd.contribution>0?'text-green':'text-red'">#[[ idx+1 ]] [[ fd.name ]]</span>
-              <span class="text-sm text-amber">贡献: [[ fd.contribution>0?'+':'' ]][[ fd.contribution ]]分</span>
-            </div>
-            <div class="text-xs text-sub mt-1">类别: [[ fd.category ]] | 权重: [[ fd.weight ]] | IC30d: [[ fd.ic_30d ]]</div>
-          </div>
-          <div class="text-sm text-sub mt-3 mb-1">📋 全部因子得分</div>
-          <div v-for="fd in factorDetailData" :key="fd.name" class="flex justify-between text-xs py-0.5" style="border-bottom:1px solid #101010;">
-            <span>[[ fd.name ]]</span>
-            <span class="text-sub">[[ fd.category ]]</span>
-            <span :class="fd.contribution>0?'text-green':'text-red'">[[ fd.contribution>0?'+':'' ]][[ fd.contribution ]]</span>
-          </div>
-        </div>
-        <div v-else class="text-center text-sub py-8">暂无因子数据</div>
-      </div>
-    </div>
-
-    <!-- 狗窝 -->
-    <div class="doghouse" @dblclick="toggleDog">
-      <canvas ref="houseCanvas" width="80" height="64" style="display:block;"></canvas>
-      <div class="text-sm text-sub text-center mt-1">双击[[ dogSleeping?'唤醒':'回窝' ]]</div>
-    </div>
-
-    <!-- 像素小狗 -->
-    <div class="pet-container" v-show="!dogSleeping" :style="{left:petX+'px',top:petY+'px'}" @mousedown="startDrag">
-      <div class="pet-bubble">[[ petMessage ]]</div>
-      <canvas ref="petCanvas" width="64" height="64" style="display:block;"></canvas>
-    </div>
-
-    <!-- K线弹窗 -->
-    <div v-if="klineVisible" class="fixed inset-0 z-50 flex items-center justify-center" style="background:rgba(0,0,0,0.85);" @click="klineVisible=false">
-      <div class="rounded-lg p-4" style="background:var(--card);border:1px solid var(--amber);max-width:90vw;max-height:90vh;overflow:auto;" @click.stop>
-        <div class="flex justify-between items-center mb-3">
-          <span class="text-xl text-amber font-bold">📈 [[ klineCode ]] K线图</span>
+          <span class="text-lg font-bold text-amber">[[ klineCode ]] K线图</span>
           <button class="btn btn-sm" @click="klineVisible=false">关闭</button>
         </div>
-        <div v-if="klineLoading" class="text-center text-sub py-10">⏳ 加载中...</div>
-        <img v-if="klineImage && !klineLoading" :src="klineImage" style="max-width:100%;border-radius:8px;" />
-        <div v-if="klineError" class="text-red text-center py-10">[[ klineError ]]</div>
+        <div v-if="klineLoading" class="text-center text-sub py-8">加载中...</div>
+        <div v-else-if="klineError" class="text-center price-down py-8">[[ klineError ]]</div>
+        <img v-else :src="klineImage" style="width:100%;">
       </div>
     </div>
   </div>
 
   <script src="/static/js/app.js"></script>
-
-  <!-- PWA 安装提示 -->
-  <div id="pwa-install-banner" style="display:none;position:fixed;bottom:0;left:0;right:0;background:#1a1a1a;border-top:2px solid var(--amber);padding:12px 18px;z-index:9999;text-align:center;">
-    <span style="color:var(--amber);font-size:15px;">点击安装橘子量化到主屏幕</span>
-    <button id="pwa-install-btn" class="btn btn-sm ml-2" style="color:#fff;border-color:#fff;">安装</button>
-    <button id="pwa-install-close" class="btn btn-sm ml-2" style="border-color:var(--sub);color:var(--sub);">关闭</button>
-  </div>
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(function() {});
-    }
-    let pwaInstallPrompt;
-    window.addEventListener('beforeinstallprompt', function(e) {
-      e.preventDefault();
-      pwaInstallPrompt = e;
-      document.getElementById('pwa-install-banner').style.display = 'block';
-      document.getElementById('pwa-install-btn').onclick = function() {
-        pwaInstallPrompt.prompt();
-        pwaInstallPrompt.userChoice.then(function(r) {
-          document.getElementById('pwa-install-banner').style.display = 'none';
-        });
-      };
-      document.getElementById('pwa-install-close').onclick = function() {
-        document.getElementById('pwa-install-banner').style.display = 'none';
-      };
-    });
-  </script>
-
 </body>
 </html>
