@@ -225,14 +225,30 @@ def extract_reminder(text):
 def index():
     return render_template('index.html')
 
+# 扫描缓存（5分钟内不重复全量扫描）
+_SCAN_CACHE = {'time': 0, 'data': None}
+
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
     if not is_trading_day():
         wd = get_weekday()
         msg = '周末休市，请在工作日进行扫描' if wd >= 5 else '今日非交易日，数据可能不是最新'
         return jsonify({'status': 'non_trading', 'message': msg, 'stocks': [], 'total': 0})
+
+    # 5分钟内返回缓存
+    now = time.time()
+    if _SCAN_CACHE['data'] and (now - _SCAN_CACHE['time']) < 300:
+        cached = _SCAN_CACHE['data'].copy()
+        cached['cached'] = True
+        return jsonify(cached)
+
     pool = _get_pool_snapshot()
     if pool is None or len(pool) == 0:
+        if _SCAN_CACHE['data']:
+            cached = _SCAN_CACHE['data'].copy()
+            cached['cached'] = True
+            cached['status'] = 'stale'
+            return jsonify(cached)
         return jsonify({'status': 'error', 'message': '行情数据获取失败，请稍后重试（可能为非交易日或网络异常）', 'stocks': [], 'total': 0})
     pool = pool[~pool['名称'].str.contains('ST|退')]
     pool = pool[pool['总市值']>50e8]; pool = pool[pool['最新价']>3]
@@ -283,7 +299,10 @@ def analyze():
                 candidate['ai_summary'] = f'AI分析失败: {str(e)[:50]}'
 
     candidates.sort(key=lambda x:x['signal'], reverse=True)
-    return jsonify({'status':'ok','stocks':candidates[:15],'total':len(candidates)})
+    result = {'status': 'ok', 'stocks': candidates[:15], 'total': len(candidates)}
+    _SCAN_CACHE['time'] = time.time()
+    _SCAN_CACHE['data'] = {'status': 'ok', 'stocks': candidates[:15], 'total': len(candidates)}
+    return jsonify(result)
 
 @app.route('/api/sell_check', methods=['POST'])
 def sell_check():
@@ -292,23 +311,89 @@ def sell_check():
     buy_price = float(data.get('buy_price',0))
     if not code: return jsonify({'error':'缺少代码'}),400
     try:
-        spot = ak.stock_zh_a_spot_em()
-        row = spot[spot['代码']==code]
-        if len(row)==0: return jsonify({'error':'未找到股票'}),404
-        cp = float(row['最新价'].values[0])
-        chg = float(row['涨跌幅'].values[0]) if '涨跌幅' in row.columns else 0
-        df = get_stock_daily_cached(code,30)
-        rsi = compute_rsi(df['close']) if df is not None else 50
-        profit_pct = (cp-buy_price)/buy_price*100 if buy_price>0 else 0
-        should_sell = False; reasons = []
-        if profit_pct>3: should_sell=True; reasons.append(f"盈利{profit_pct:.1f}%止盈")
-        elif profit_pct>1.5 and rsi>70: should_sell=True; reasons.append(f"盈利{profit_pct:.1f}%且RSI高")
-        elif profit_pct<-2: should_sell=True; reasons.append(f"亏损{profit_pct:.1f}%止损")
-        elif rsi>75: should_sell=True; reasons.append(f"RSI={rsi:.0f}超买")
-        if not should_sell: reasons.append(f"RSI={rsi:.0f}可持有")
-        return jsonify({'code':code,'buy_price':buy_price,'current_price':cp,'profit_pct':round(profit_pct,2),'change_pct':chg,'rsi':round(rsi,1),'should_sell':should_sell,'reasons':reasons,'advice':'建议卖出' if should_sell else '建议持有'})
+        cp = chg = name = None
+        try:
+            spot = ak.stock_zh_a_spot_em()
+            row = spot[spot['代码']==code]
+            if len(row)>0:
+                cp = float(row['最新价'].values[0])
+                chg = float(row['涨跌幅'].values[0]) if '涨跌幅' in row.columns else 0
+                name = str(row['名称'].values[0]) if '名称' in row.columns else ''
+        except Exception:
+            pass
+
+        df = get_stock_daily_cached(code, 60)
+        if df is None: return jsonify({'error': '数据不足'}), 404
+
+        # 周末降级：用最近收盘价
+        if cp is None:
+            cp = float(df['close'].iloc[-1])
+            chg = 0
+        if not name:
+            name = ''
+        closes = df['close']; highs = df['high']; lows = df['low']
+        rsi = compute_rsi(closes)
+        macd_line, signal_line, macd_hist = compute_macd(closes)
+        k, d, j = compute_kdj(highs, lows, closes)
+        adx_val, plus_di, minus_di = compute_adx(highs, lows, closes) or (0, 0, 0)
+        profit_pct = (cp - buy_price) / buy_price * 100 if buy_price > 0 else 0
+        ma5 = closes.rolling(5).mean().iloc[-1]
+        ma20 = closes.rolling(20).mean().iloc[-1]
+        vol_ratio = float(df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]) if len(df) >= 20 else 1.0
+
+        # Composite signal (周末降级：跳过全量扫描)
+        try:
+            composite = calculate_comprehensive_score(code)
+            current_signal = composite['signal'] if composite else 50
+        except Exception:
+            current_signal = 50
+
+        should_sell = False; reasons = []; level = 'hold'
+
+        if profit_pct >= 5:
+            should_sell = True; level = 'strong_sell'
+            reasons.append(f'盈利{profit_pct:.1f}%触发强制止盈线(+5%)')
+        elif profit_pct >= 3:
+            should_sell = True; level = 'sell'
+            reasons.append(f'盈利{profit_pct:.1f}%触发止盈线(+3%)')
+        elif profit_pct >= 1.5 and rsi > 70:
+            should_sell = True; level = 'sell'
+            reasons.append(f'盈利{profit_pct:.1f}%且RSI={rsi:.0f}超买')
+        elif profit_pct <= -2:
+            should_sell = True; level = 'strong_sell'
+            reasons.append(f'亏损{profit_pct:.1f}%触发止损线(-2%)')
+        elif rsi > 80:
+            should_sell = True; level = 'sell'
+            reasons.append(f'RSI={rsi:.0f}严重超买')
+        elif rsi > 70 and macd_hist < 0:
+            should_sell = True; level = 'sell'
+            reasons.append(f'RSI={rsi:.0f}超买且MACD死叉')
+        elif current_signal < 30:
+            should_sell = True; level = 'sell'
+            reasons.append(f'综合评分降至{current_signal}，信号失效')
+        elif adx_val and adx_val > 30 and plus_di < minus_di:
+            should_sell = True; level = 'sell'
+            reasons.append(f'ADX={adx_val:.0f}趋势转空')
+        elif ma5 < ma20 and profit_pct < 0:
+            should_sell = True; level = 'sell'
+            reasons.append('均线死叉且持仓亏损')
+
+        if not should_sell:
+            reasons.append(f'RSI={rsi:.0f} | 信号={current_signal} | 评分正常，可持有')
+
+        return jsonify({
+            'code': code, 'name': name, 'buy_price': buy_price,
+            'current_price': cp, 'profit_pct': round(profit_pct, 2),
+            'change_pct': chg, 'rsi': round(rsi, 1),
+            'macd_hist': round(macd_hist, 4), 'kdj_k': round(k, 1),
+            'adx': round(adx_val, 1) if adx_val else 0,
+            'signal': current_signal, 'vol_ratio': round(vol_ratio, 2),
+            'should_sell': should_sell, 'level': level,
+            'reasons': reasons,
+            'advice': '🔴 建议卖出' if level == 'strong_sell' else ('🟡 考虑卖出' if should_sell else '🟢 建议持有')
+        })
     except Exception as e:
-        return jsonify({'error':str(e)}),500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/position/buy', methods=['POST'])
 def buy():
@@ -502,6 +587,34 @@ def sector_rotation():
         top_in = df.nlargest(5,'主力净流入')[['板块名称','主力净流入']].to_dict('records')
         return jsonify({'top_inflow':top_in,'advice':'建议关注主力资金持续流入的板块'})
     except: return jsonify({'error':'数据获取失败'})
+
+@app.route('/api/market_ticker', methods=['GET'])
+def market_ticker():
+    """实时大盘指数（新浪源）"""
+    import urllib.request
+    try:
+        url = "http://hq.sinajs.cn/list=sh000001,sz399001,sz399006,sh000300,sh000688"
+        req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("gbk", errors="ignore")
+        result = {}
+        for line in raw.strip().split(";\n"):
+            if not line.strip():
+                continue
+            parts = line.split('="')
+            if len(parts) != 2:
+                continue
+            code = parts[0].replace("var hq_str_", "")
+            values = parts[1].strip('";').split(",")
+            if len(values) >= 4:
+                price = float(values[1]) if values[1] else 0
+                yesterday = float(values[2]) if values[2] else 0
+                change_pct = round((price - yesterday) / yesterday * 100, 2) if yesterday else 0
+                result[code] = {"name": values[0], "price": round(price, 2), "change_pct": change_pct}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({})
+
 
 @app.route('/api/market_env', methods=['GET'])
 def market_env_route():

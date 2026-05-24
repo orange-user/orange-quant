@@ -17,11 +17,22 @@
 <body>
   <div id="app">
     <!-- 顶部状态栏 -->
-    <div style="background:#0a0a0a;padding:14px 18px;border-bottom:1px solid var(--border);" class="flex justify-between items-center flex-wrap gap-2">
+    <div style="background:#0a0a0a;padding:10px 18px;border-bottom:1px solid var(--border);" class="flex justify-between items-center flex-wrap gap-2">
       <div class="flex items-center gap-3">
         <span class="text-amber font-bold text-xl">🍊 橘子量化 v3.1</span>
-        <span class="text-sub text-sm">| 量化超短线 | 尾盘买入·早盘卖出·坚决执行</span>
-        <span v-if="autoScanEnabled" class="text-green text-xs">🕑 定时扫描 (14:30)</span>
+        <span v-if="marketTicker.sh000001" class="text-sm font-mono">
+          <span :class="marketTicker.sh000001.change_pct>=0?'text-green':'text-red'">
+            上证 [[ marketTicker.sh000001.price.toFixed(0) ]] [[ marketTicker.sh000001.change_pct>=0?'+':'' ]][[ marketTicker.sh000001.change_pct ]]%
+          </span>
+          <span class="text-sub mx-1">|</span>
+          <span :class="marketTicker.sz399001.change_pct>=0?'text-green':'text-red'">
+            深证 [[ marketTicker.sz399001.price.toFixed(0) ]] [[ marketTicker.sz399001.change_pct>=0?'+':'' ]][[ marketTicker.sz399001.change_pct ]]%
+          </span>
+          <span class="text-sub mx-1">|</span>
+          <span :class="marketTicker.sz399006.change_pct>=0?'text-green':'text-red'">
+            创业板 [[ marketTicker.sz399006.price.toFixed(0) ]] [[ marketTicker.sz399006.change_pct>=0?'+':'' ]][[ marketTicker.sz399006.change_pct ]]%
+          </span>
+        </span>
       </div>
       <div class="flex items-center gap-3 text-sm text-sub">
         <button @click="toggleAutoScan" :class="autoScanEnabled?'text-green':'text-sub'">[[ autoScanEnabled ? '定时开' : '定时关' ]]</button>
@@ -93,14 +104,14 @@
             <div><label class="text-sm text-sub">买入价</label><br><input v-model="sellPrice" placeholder="如1680" style="width:120px;"></div>
             <button class="btn btn-sm" @click="checkSell">检查卖出</button>
           </div>
-          <div v-if="sellResult" class="mt-3 p-3 rounded text-sm" :class="sellResult.should_sell ? 'text-red' : 'text-green'" style="border:1px solid currentColor; background:rgba(0,0,0,0.3);">
+          <div v-if="sellResult" class="mt-3 p-3 rounded text-sm" :class="sellResult.should_sell ? (sellResult.level==='strong_sell'?'text-red':'text-amber') : 'text-green'" style="border:1px solid currentColor; background:rgba(0,0,0,0.3);">
             <div class="font-bold text-base">[[ sellResult.advice ]]</div>
             <div v-for="r in sellResult.reasons">• [[ r ]]</div>
-            <div class="text-sm text-sub mt-1">买入¥[[ sellResult.buy_price ]] → 现价¥[[ sellResult.current_price ]] ([[ sellResult.profit_pct>0?'+':'' ]][[ sellResult.profit_pct ]]%)</div>
+            <div class="text-sm text-sub mt-1">买入¥[[ sellResult.buy_price ]] → 现价¥[[ sellResult.current_price ]] ([[ sellResult.profit_pct>0?'+':'' ]][[ sellResult.profit_pct ]]%) | 信号:[[ sellResult.signal ]] | RSI:[[ sellResult.rsi ]]</div>
           </div>
         </div>
         <div v-if="message" class="card text-sm">[[ message ]]</div>
-        <div v-if="stocks.length && status==='ok'" class="text-sm text-sub mt-2">扫描 <b class="text-amber">[[ total ]]</b> 只 | 信号 <b class="text-amber">[[ stocks.length ]]</b> 个</div>
+        <div v-if="stocks.length && status==='ok'" class="text-sm text-sub mt-2">扫描 <b class="text-amber">[[ total ]]</b> 只 | 信号 <b class="text-amber">[[ stocks.length ]]</b> 个 <span v-if="cached" class="text-xs text-sub ml-2">(缓存结果)</span></div>
         <div v-if="stocks.length && status==='ok'" class="overflow-y-auto" style="max-height:55vh;">
           <div v-for="(s,i) in stocks" :key="i" class="card">
             <div class="flex justify-between mb-2">
@@ -113,8 +124,10 @@
               </div>
               <div class="text-center">
                 <div class="text-3xl font-black font-mono" :class="s.signal>=75?'text-green':s.signal>=55?'text-amber':'text-sub'">[[ s.signal ]]</div>
-                <div class="text-xs text-sub">综合评分</div>
-                <div class="text-sm text-amber mt-1">[[ s.position_advice ]]</div>
+                <div class="text-xs font-bold px-2 py-0.5 rounded mt-1" :class="s.signal>=75?'bg-green-900/50 text-green border border-green/30':s.signal>=65?'bg-amber-900/50 text-amber border border-amber/30':s.signal>=50?'bg-blue-900/50 text-blue border border-blue/30':'text-sub'">
+                  [[ s.signal>=75?'🔥 强烈买入':s.signal>=65?'📈 建议买入':s.signal>=50?'👀 观察':'⚪ 弱信号' ]]
+                </div>
+                <div class="text-sm text-sub mt-1">[[ s.position_advice ]]</div>
               </div>
             </div>
             <div class="text-amber text-base font-bold mb-2">📌 [[ s.priority_reason ]]</div>
@@ -191,7 +204,15 @@
       <div class="card mt-3"><div class="text-xl text-amber font-bold mb-4">💼 持仓</div>
         <div v-if="stats.positions.length">
           <div class="grid-4 text-sm text-sub font-bold pb-2" style="border-bottom:2px solid #1a1a1a;"><span>代码</span><span>买入价</span><span>盈亏</span><span>操作</span></div>
-          <div v-for="p in stats.positions" :key="p.code" class="grid-4 text-base py-2" style="border-bottom:1px solid #0d0d0d; align-items:center;"><span class="text-amber font-mono font-bold">[[ p.code ]]</span><span>¥[[ p.buy_price ]]</span><span :class="(p.float_profit||0)>=0?'text-green':'text-red'" class="font-mono">[[ (p.float_profit||0)>=0?'+':'' ]][[ p.float_profit||'--' ]]%</span><button class="btn btn-sm" @click="quickSell(p.code)">卖出</button></div>
+          <div v-for="p in stats.positions" :key="p.code" class="grid-4 text-base py-2" style="border-bottom:1px solid #0d0d0d; align-items:center;">
+            <span class="text-amber font-mono font-bold">[[ p.code ]]</span>
+            <span>¥[[ p.buy_price ]] <span class="text-sub text-xs">→ [[ p.current_price || '--' ]]</span></span>
+            <span :class="(p.float_profit||0)>=0?'text-green':'text-red'" class="font-mono">[[ (p.float_profit||0)>=0?'+':'' ]][[ p.float_profit||'--' ]]%</span>
+            <div class="flex gap-1">
+              <button class="btn btn-sm" @click="quickSell(p.code)">卖出</button>
+              <button class="btn btn-sm" @click="sellCode=p.code;sellPrice=p.buy_price;checkSell()" style="border-color:var(--blue);color:var(--blue);background:linear-gradient(180deg,#0a0c14,#060810);">检查</button>
+            </div>
+          </div>
         </div>
         <div v-else class="text-center text-sub py-8">暂无持仓</div>
       </div>

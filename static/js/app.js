@@ -3,7 +3,7 @@ createApp({
   delimiters: ['[[', ']]'],
   setup() {
     const tab = ref('trade');
-    const loading = ref(false); const fetched = ref(false); const status = ref(''); const message = ref('');
+    const loading = ref(false); const fetched = ref(false); const status = ref(''); const message = ref(''); const cached = ref(false);
     const stocks = ref([]); const total = ref(0);
     const yiming = ref({id:1,text:'加载中...',translation:'',summary:''});
     const petMessage = ref('汪汪~'); const petX = ref(window.innerWidth-120); const petY = ref(window.innerHeight-100);
@@ -34,7 +34,7 @@ createApp({
     const indicatorCycleList = ref([]); const marketMatch = ref(null);
     const longTermResult = ref(null); const longTermLoading = ref(false);
     const weightsResult = ref(null); const dataQuality = ref(null); const dockerfile = ref(''); const updateResult = ref('');
-    const marketEnvText = ref(''); const sectorRotation = ref([]); const signalsHistory = ref([]);
+    const marketTicker = ref({}); const marketEnvText = ref(''); const sectorRotation = ref([]); const signalsHistory = ref([]);
 
     const previewReminders = computed(() => {
       const kw = { '止损':'严格执行止损','追高':'避免追高','仓位':'注意仓位' };
@@ -103,7 +103,7 @@ createApp({
 
     async function executeScan() {
       loading.value=true; fetched.value=true; stocks.value=[];
-      try{ const r=await fetch('/api/analyze',{method:'POST'}); const d=await r.json(); status.value=d.status||''; message.value=d.message||''; stocks.value=d.stocks||[]; total.value=d.total||0;
+      try{ const r=await fetch('/api/analyze',{method:'POST'}); const d=await r.json(); status.value=d.status||''; message.value=d.message||''; stocks.value=d.stocks||[]; total.value=d.total||0; cached.value=!!d.cached;
         const high = (d.stocks||[]).filter(s => s.signal >= 75);
         if (high.length) { notifyHighSignal(high[0]); for (let i=1;i<high.length&&i<3;i++) setTimeout(()=>notifyHighSignal(high[i]), i*3000); }
       }catch(e){} finally{loading.value=false;}
@@ -127,6 +127,7 @@ createApp({
     async function fetchMarketEnv() { try{ const r=await fetch('/api/market_env'); const d=await r.json(); marketEnvText.value=`${d.environment} ${d.advice}`; }catch(e){} }
     async function fetchSectorRotation() { try{ const r=await fetch('/api/sector_rotation'); const d=await r.json(); sectorRotation.value=d.top_inflow||[]; }catch(e){} }
     async function fetchSignalsHistory() { try{ const r=await fetch('/api/signals_log'); signalsHistory.value=await r.json(); }catch(e){} }
+    async function fetchMarketTicker() { try{ const r=await fetch('/api/market_ticker'); const d=await r.json(); if(!d.error) marketTicker.value=d; }catch(e){} }
     async function evolveFactors() {
       if (evolving.value) return;
       evolving.value = true;
@@ -323,15 +324,16 @@ createApp({
       setInterval(()=>{petAnimFrame.value++; drawPet();},30);
       requestAnimationFrame(function anim(){ updatePet(); requestAnimationFrame(anim); });
       window.addEventListener('mousemove',onMouseMove);
-      await executeScan(); await loadAIBrief(); await fetchHeatmap(); await fetchMoney(); await loadStats(); await loadEquityCurve();
+      await fetchMarketTicker(); await executeScan(); await loadAIBrief(); await fetchHeatmap(); await fetchMoney(); await loadStats(); await loadEquityCurve();
       try{ const r=await fetch('/api/yiming'); yiming.value=await r.json(); }catch(e){}
       try{ const r=await fetch('/api/news'); newsList.value=(await r.json()).map(n=>({...n,expanded:false})); }catch(e){}
       try{ const r=await fetch('/api/pet_reminder'); petMessage.value=(await r.json()).text; }catch(e){}
       setInterval(()=>{ fetch('/api/pet_reminder').then(r=>r.json()).then(d=>petMessage.value=d.text); },30000);
+      setInterval(fetchMarketTicker, 30000);
     });
 
     return {
-      tab, loading, fetched, status, message, stocks, total, evolving,
+      tab, loading, fetched, cached, status, message, stocks, total, evolving,
       evolveResult, factorStatus, evolveFactors, loadFactorStatus,
       yiming, petMessage, petX, petY, dogSleeping, aiBrief,
       sellCode, sellPrice, sellResult, newDiary, diaryList, stats, trades,
@@ -344,7 +346,7 @@ createApp({
       weightsResult, updateWeights, dataQuality, checkDataQuality,
       dockerfile, getDockerfile, updateResult, gitUpdate,
       marketEnvText, fetchMarketEnv, sectorRotation, fetchSectorRotation,
-      signalsHistory, fetchSignalsHistory, toggleAutoScan,
+      signalsHistory, fetchSignalsHistory, toggleAutoScan, fetchMarketTicker, marketTicker,
       klineVisible, klineCode, klineImage, klineLoading, klineError, showKline,
       strategyComparison, loadStrategyComparison, strategyCombo, loadStrategyCombo,
       factorRegistry, factorRankList, loadFactorRegistry, loadFactorRank,
