@@ -38,7 +38,7 @@ def _deepseek_chat(messages, temperature=0.3, max_tokens=500):
 def ai_market_brief(news_list, top_stocks, market_info=""):
     if not API_KEY:
         return "请配置API Key"
-    news_text = "\n".join([f"- {n['title']}" for n in (news_list or [])[:10]]) or "暂无新闻"
+    news_text = "\n".join([f"- {n.get('title', n.get('source', '新闻'))}" for n in (news_list or [])[:10]]) or "暂无新闻"
     stocks_text = "\n".join([f"- {s['code']} {s['name']}: {s['signal']}分" for s in (top_stocks or [])[:5]]) or "暂无信号"
     content = _deepseek_chat([
         {"role": "system", "content": "用简洁中文生成市场简报：1.环境判断 2.板块机会 3.风险提示 4.仓位建议。"},
@@ -49,7 +49,7 @@ def ai_market_brief(news_list, top_stocks, market_info=""):
 def ai_enhanced_analysis(news_list, top_stocks):
     if not API_KEY:
         return {"confidence": 1.0, "summary": "AI未配置", "sectors": []}
-    news_text = "\n".join([f"{i+1}. {n['title']}" for i, n in enumerate((news_list or [])[:15])]) or "暂无新闻"
+    news_text = "\n".join([f"{i+1}. {n.get('title', n.get('source', '新闻'))}" for i, n in enumerate((news_list or [])[:15])]) or "暂无新闻"
     stocks_text = "\n".join([f"{i+1}. {s['code']} {s['name']} 评分{s['signal']}分" for i, s in enumerate((top_stocks or [])[:5])]) or "暂无信号"
     content = _deepseek_chat([
         {"role": "system", "content": "返回JSON: {\"confidence\": 0.8-1.5, \"summary\": \"市场总结(50字)\", \"sectors\": [\"板块1\"]}"},

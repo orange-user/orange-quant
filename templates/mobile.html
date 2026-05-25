@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>橘子量化 · 手机版</title>
+  <meta name="theme-color" content="#FFFFFF">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/static/manifest.json">
+  <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
+  <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+  <link rel="stylesheet" href="/static/css/mobile.css">
+</head>
+<body>
+  <div id="app">
+    <div class="toast-container" id="toastContainer"></div>
+    <header class="site-header">
+      <div class="flex items-center justify-between" style="height:48px;">
+        <div class="flex items-center gap-1" style="min-width:0;">
+          <span style="color:var(--text);font-weight:800;font-size:16px;white-space:nowrap;">
+            <span style="color:var(--amber);margin-right:2px;">&diams;</span>橘子量化
+          </span>
+          <span style="color:var(--text-label);font-size:10px;letter-spacing:1px;white-space:nowrap;">尾盘买入</span>
+        </div>
+        <div class="flex items-center gap-2 text-xs font-mono" style="color:var(--text2);flex-shrink:0;">
+          <template v-if="marketTicker.sh000001">
+            <span :class="marketTicker.sh000001.change_pct>=0?'price-up':'price-down'">[[ marketTicker.sh000001.change_pct>=0?'+':'' ]][[ marketTicker.sh000001.change_pct ]]%</span>
+            <span style="color:var(--border);">|</span>
+            <span :class="marketTicker.sz399001.change_pct>=0?'price-up':'price-down'">[[ marketTicker.sz399001.change_pct>=0?'+':'' ]][[ marketTicker.sz399001.change_pct ]]%</span>
+            <span style="color:var(--border);">|</span>
+            <span :class="marketTicker.sz399006.change_pct>=0?'price-up':'price-down'">[[ marketTicker.sz399006.change_pct>=0?'+':'' ]][[ marketTicker.sz399006.change_pct ]]%</span>
+          </template>
+        </div>
+      </div>
+    </header>
+    <main class="main-content">
+      <!-- scan -->
+      <div v-show="tab==='scan'">
+        <div class="flex items-center mb-2" style="gap:8px;">
+          <button class="btn btn-scan" @click="executeScan" :disabled="loading" style="flex-shrink:0;">[[ loading ? '扫描中' : '开始扫描' ]]</button>
+          <div class="text-xs" style="color:var(--text2);flex:1;min-width:0;">
+            <span v-if="status==='non_trading'">今日休市</span>
+            <span v-if="loading" style="color:var(--blue);">⏳ [[ scanProgress ]]</span>
+            <span v-if="status==='ok' && total > 0">[[ prescreenCount || total ]]只 → <b style="color:var(--amber)">[[ stocks.length ]]</b>个信号 <span v-if="cached" class="text-muted">(缓存)</span></span>
+          </div>
+          <button @click="toggleAutoScan" :style="{color: autoScanEnabled ? 'var(--blue)' : 'var(--text3)', background:'none', border:'none', cursor:'pointer', fontSize:'11px',flexShrink:0}">[[ autoScanEnabled ? '●定时' : '○定时' ]]</button>
+        </div>
+        <div v-if="loading && progress.stage" class="card" style="padding:10px 14px;">
+          <div class="flex justify-between items-center mb-1"><span class="text-xs" style="color:var(--blue);font-weight:600;">[[ progress.stage ]]</span><span class="text-xs text-sub">[[ progress.pct ]]%</span></div>
+          <div class="progress-bar"><div class="progress-fill" :style="{width: progress.pct + '%'}"></div></div>
+          <div class="text-xs text-sub mt-1">[[ progress.msg ]]</div>
+        </div>
+        <div v-if="message" class="alert alert-info mb-2">[[ message ]]</div>
+        <div v-if="stocks.length && status==='ok'">
+          <div v-for="(s,i) in stocks" :key="s.code" class="card stock-result-card">
+            <div class="flex items-start justify-between mb-1">
+              <div class="flex items-center gap-1 flex-wrap" style="flex:1;min-width:0;">
+                <span class="text-xs text-muted">#[[ i+1 ]]</span>
+                <span class="font-mono font-bold" style="color:var(--amber);font-size:15px;">[[ s.code ]]</span>
+                <span class="text-xs font-mono" :class="s.change_pct>0?'price-up':'price-down'">[[ s.change_pct>0?'+':'' ]][[ s.change_pct ]]%</span>
+                <span class="font-mono text-sm">[[ s.price ]]</span>
+              </div>
+              <div class="text-center" style="flex-shrink:0;">
+                <div class="font-mono font-bold" style="font-size:22px;" :class="s.signal>=75?'price-up':s.signal>=55?'text-amber':'text-muted'">[[ s.signal ]]</div>
+                <div :class="['signal-badge', s.signal>=75?'signal-strong':s.signal>=65?'signal-buy':s.signal>=50?'signal-watch':'signal-weak']">[[ s.signal>=75?'强烈买入':s.signal>=65?'建议买入':s.signal>=50?'观察':'弱信号' ]]</div>
+              </div>
+            </div>
+            <div class="flex items-center gap-1 mb-1" style="min-width:0;">
+              <span class="text-sm truncate" style="max-width:120px;">[[ s.name ]]</span>
+              <span class="text-xs text-sub">[[ s.priority_reason ]]</span>
+            </div>
+            <div class="flex gap-2 flex-wrap text-xs mb-2">
+              <span class="text-sub">RSI <b :class="s.rsi>=70?'price-down':s.rsi<=30?'price-up':'text-amber'">[[ s.rsi ]]</b></span>
+              <span class="text-sub">量比 <b>[[ s.volume_ratio ]]</b></span>
+              <span class="text-sub">5日动量 <b :class="s.momentum_5d>0?'price-up':'price-down'">[[ s.momentum_5d>0?'+':'' ]][[ s.momentum_5d ]]%</b></span>
+              <span class="text-sub" v-if="s.adx">ADX <b>[[ s.adx ]]</b></span>
+            </div>
+            <div class="flex gap-1 flex-wrap" v-if="s.strategy_scores">
+              <span v-for="(val,name) in topStrategies(s.strategy_scores)" :key="name" class="tag text-xs" :class="val>=15?'price-up':val>=8?'text-amber':'text-muted'">[[ name ]] [[ val ]]</span>
+            </div>
+            <div v-if="s.ai_decision && s.ai_decision!=='ERROR'" class="mt-2 p-2 rounded text-xs" :class="s.ai_decision==='BUY'?'signal-strong':'signal-weak'">
+              🤖 AI: [[ s.ai_decision==='BUY'?'建议买入':'建议观望' ]] <span class="text-sub">[[ s.ai_summary ]]</span>
+            </div>
+            <div class="flex gap-2 mt-2">
+              <button class="btn btn-sm btn-primary" style="flex:1;" @click="buyStock(s.code,s.price)" :disabled="buying">[[ buying?'买入中...':'买入' ]]</button>
+              <button class="btn btn-sm" style="flex:1;" @click="sellCode=s.code;sellPrice=s.price;checkSell()">卖检</button>
+            </div>
+          </div>
+        </div>
+        <div v-if="!stocks.length && !loading && fetched && status==='ok'" class="card text-center text-sub py-10">暂无符合条件的信号，尝试收盘前再扫描</div>
+        <div class="card mt-2">
+          <div class="card-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;" @click="sellCheckOpen=!sellCheckOpen">
+            <span>[[ sellCheckOpen ? '▼' : '▶' ]] 卖出检查</span>
+          </div>
+          <div v-show="sellCheckOpen">
+            <div class="flex gap-2 items-end" style="flex-wrap:nowrap;">
+              <div style="flex:1;"><label class="text-xs text-sub">代码</label><br><input v-model="sellCode" placeholder="600519"></div>
+              <div style="flex:1;"><label class="text-xs text-sub">买入价</label><br><input v-model="sellPrice" placeholder="1680"></div>
+              <button class="btn btn-sm btn-primary" @click="checkSell" style="flex-shrink:0;">检查</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- pos -->
+      <div v-show="tab==='pos'" style="max-width:1000px;">
+        <div class="grid-3 mb-3">
+          <div class="stat-card"><div class="stat-label">总交易</div><div class="stat-num text-amber">[[ stats.total_trades ]]</div></div>
+          <div class="stat-card"><div class="stat-label">胜率</div><div class="stat-num" :class="stats.win_rate>=50?'price-up':'price-down'">[[ stats.win_rate ]]%</div></div>
+          <div class="stat-card"><div class="stat-label">累计盈亏</div><div class="stat-num" :class="stats.total_profit>=0?'price-up':'price-down'">[[ stats.total_profit ]]</div></div>
+        </div>
+        <div class="grid-3 mb-3">
+          <div class="stat-card"><div class="stat-label">浮动盈亏</div><div class="stat-num" :class="stats.floating_pnl>=0?'price-up':'price-down'">[[ stats.floating_pnl ]]</div></div>
+          <div class="stat-card"><div class="stat-label">持仓数量</div><div class="stat-num text-amber">[[ stats.total_positions ]]</div></div>
+          <div class="stat-card"><div class="stat-label">最佳单笔</div><div class="stat-num price-up">[[ stats.best_trade ? stats.best_trade.profit : '--' ]]</div></div>
+        </div>
+        <div class="card">
+          <div class="card-header">当前持仓</div>
+          <div v-if="stats.positions.length">
+            <div v-for="p in stats.positions" :key="p.code" class="position-item">
+              <div class="flex justify-between items-center mb-1">
+                <div><span class="font-mono font-bold text-amber">[[ p.code ]]</span><span class="text-xs text-sub ml-1">[[ p.name || '--' ]]</span></div>
+                <div class="font-mono font-bold" :class="(p.float_profit||0)>=0?'price-up':'price-down'">[[ (p.float_profit||0)>=0?'+':'' ]][[ p.float_profit ]]%</div>
+              </div>
+              <div class="flex justify-between text-xs text-sub mb-2">
+                <span>买入 ¥[[ p.buy_price ]]</span><span>现价 ¥[[ p.current_price || '--' ]]</span><span>[[ p.buy_time ]]</span>
+              </div>
+              <div class="flex gap-2">
+                <button class="btn btn-sm btn-danger" @click="quickSell(p.code)" :disabled="selling===p.code" style="flex:1;">[[ selling===p.code ? '卖出中...' : '卖出' ]]</button>
+                <button class="btn btn-sm" @click="sellCode=p.code;sellPrice=p.buy_price;checkSell()" style="flex:1;">检查</button>
+                <button class="btn btn-sm" style="background:var(--hover-bg);color:var(--text3);flex-shrink:0;" @click="deletePosition(p.code)">删除</button>
+              </div>
+            </div>
+          </div>
+          <div v-else class="text-center text-sub py-6">暂无持仓</div>
+        </div>
+        <div class="card mt-2" v-if="trades.length">
+          <div class="card-header">交易记录</div>
+          <div v-for="(t, ti) in trades.slice().reverse().slice(0,50)" :key="t.code + '-' + ti" class="trade-item">
+            <div class="flex justify-between items-center"><div><span class="font-mono font-bold text-amber">[[ t.code ]]</span><span class="text-xs text-sub ml-2">[[ t.sell_time ]]</span></div><div class="font-mono font-bold" :class="t.profit>=0?'price-up':'price-down'">[[ t.profit>=0?'+':'' ]][[ t.profit ]]</div></div>
+            <div class="flex justify-between text-xs text-sub mt-1"><span>¥[[ t.buy_price ]] → ¥[[ t.sell_price ]]</span><span>[[ t.profit>=0?'+':'' ]][[ t.profit_pct ]]%</span><span>[[ holdDays(t.buy_time, t.sell_time) ]]天</span></div>
+          </div>
+        </div>
+      </div>
+      <!-- stats -->
+      <div v-show="tab==='stats'" style="max-width:1000px;">
+        <div class="card" v-if="stocks.length && status==='ok'">
+          <div class="card-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;" @click="signalDistOpen=!signalDistOpen">
+            <span>[[ signalDistOpen ? '▼' : '▶' ]] 信号分布</span>
+            <span class="text-xs text-sub">[[ signalStats.strong ]]强 [[ signalStats.medium ]]中 [[ signalStats.weak ]]弱</span>
+          </div>
+          <div v-show="signalDistOpen"><div id="signalDistChart" style="width:100%;height:180px;"></div></div>
+        </div>
+        <div class="card mt-2" v-if="equityCurveData.length">
+          <div class="card-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;" @click="eqSectionOpen=!eqSectionOpen"><span>[[ eqSectionOpen ? '▼' : '▶' ]] 权益曲线</span></div>
+          <div v-show="eqSectionOpen"><div id="equityChart" style="width:100%;height:260px;"></div></div>
+        </div>
+        <div class="card mt-2" v-if="equityCurveData.length">
+          <div class="card-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;" @click="ddSectionOpen=!ddSectionOpen"><span>[[ ddSectionOpen ? '▼' : '▶' ]] 回撤分析</span></div>
+          <div v-show="ddSectionOpen"><div id="drawdownChart" style="width:100%;height:200px;"></div></div>
+        </div>
+        <div class="card mt-2" v-if="monthlyPnlData.length">
+          <div class="card-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;" @click="monthlyOpen=!monthlyOpen"><span>[[ monthlyOpen ? '▼' : '▶' ]] 月度盈亏</span></div>
+          <div v-show="monthlyOpen"><div id="monthlyChart" style="width:100%;height:260px;"></div></div>
+        </div>
+      </div>
+    </main>
+    <nav class="bottom-tab-bar">
+      <button class="bottom-tab" :class="{active:tab==='scan'}" @click="switchTab('scan')"><span class="tab-icon">&#128269;</span><span>扫描</span></button>
+      <button class="bottom-tab" :class="{active:tab==='pos'}" @click="switchTab('pos')"><span class="tab-icon">&#128188;</span><span>持仓</span></button>
+      <button class="bottom-tab" :class="{active:tab==='stats'}" @click="switchTab('stats')"><span class="tab-icon">&#128200;</span><span>统计</span></button>
+    </nav>
+    <div class="modal-overlay" v-if="sellResultShow" @click.self="sellResultShow=false">
+      <div class="modal-sheet">
+        <div class="flex justify-between items-center mb-3"><span class="font-bold">[[ sellResult.advice ]]</span><button @click="sellResultShow=false" style="background:none;border:none;font-size:18px;cursor:pointer;">&times;</button></div>
+        <div v-for="r in sellResult.reasons" class="text-sm mb-1">[[ r ]]</div>
+        <div class="text-xs text-sub mt-2">¥[[ sellResult.buy_price ]] → ¥[[ sellResult.current_price ]] ([[ sellResult.profit_pct>0?'+':'' ]][[ sellResult.profit_pct ]]%) | 信号:[[ sellResult.signal || '--' ]]</div>
+      </div>
+    </div>
+  </div>
+  <script src="/static/js/mobile.js"></script>
+</body>
+</html>

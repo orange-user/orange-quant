@@ -10,8 +10,8 @@ import urllib.request
 import os
 
 WECHAT_TOKEN = os.environ.get("WECHAT_TOKEN", "quant_pulse_2024")
-DEEPSEEK_API_KEY = os.environ.get("ANTHROPIC_AUTH_TOKEN", "") or "sk-6c518b55bcbe44bba5d58b8b416f9f8f"
-DEEPSEEK_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "") or "https://api.deepseek.com"
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "") or "https://api.deepseek.com"
 LOCAL_API = "http://127.0.0.1:8000"
 
 SYSTEM_PROMPT = """你是橘子量化（Orange Quant）的AI助手，运行在阿里云服务器上。

@@ -26,13 +26,14 @@ from engine import *
 try:
     from ai_service import (ai_market_brief, ai_enhanced_analysis, ai_strategy_diagnosis,
                             ai_generate_factor_code, ai_factor_discovery,
-                            ai_committee_decision)
+                            ai_committee_decision, _deepseek_chat)
     AI_AVAILABLE = True
 except Exception as e:
     print(f"AI services not available: {e}")
     AI_AVAILABLE = False
 
 app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # Initialize
 init_db()
@@ -108,15 +109,17 @@ def calc_stats():
     win = [t for t in trades if t.get('profit',0)>0]
     wr = len(win)/len(trades)*100 if trades else 0
     floating_pnl = 0
-    for p in positions:
+    if positions:
         try:
-            df = ak.stock_zh_a_spot_em()
-            row = df[df['代码']==p['code']]
-            if len(row)>0:
-                cp = float(row['最新价'].values[0])
-                p['current_price'] = cp
-                p['float_profit'] = round((cp-p['buy_price'])/p['buy_price']*100,2)
-                floating_pnl += (cp - p['buy_price']) * p.get('shares', 100)
+            df = _get_pool_snapshot()
+            pos_codes = {p['code'] for p in positions}
+            for _, row in df[df['代码'].isin(pos_codes)].iterrows():
+                for p in positions:
+                    if p['code'] == row['代码']:
+                        cp = float(row['最新价'])
+                        p['current_price'] = cp
+                        p['float_profit'] = round((cp-p['buy_price'])/p['buy_price']*100,2)
+                        floating_pnl += (cp - p['buy_price']) * p.get('shares', 100)
         except: pass
     best_trade = max(trades, key=lambda t: t.get('profit', 0)) if trades else None
     worst_trade = min(trades, key=lambda t: t.get('profit', 0)) if trades else None
@@ -194,25 +197,47 @@ def _check_overfit(in_metrics, out_metrics):
         return {'level': 'low', 'message': f'样本内胜率{in_wr}% vs 样本外{out_wr}%%，差值{gap:.0f}%%，过拟合风险较低'}
 
 def analyze_news_sectors(title, content):
-    text = title+content
+    """分析新闻涉及的板块和情感倾向"""
+    text = title + content
     sector_map = {
         '电力':(['电力','电网','能源','发电','特高压','输电','算电协同'],'电力板块'),
         '半导体':(['芯片','半导体','集成电路','光刻','晶圆','算力'],'半导体板块'),
-        'AI':(['人工智能','AI','大模型','深度学习'],'AI板块'),
-        '新能源车':(['新能源车','电动车','锂电池','充电桩'],'新能源车板块'),
-        '银行':(['降准','降息','银行','信贷','利率'],'银行板块'),
-        '房地产':(['房地产','房价','楼市','购房'],'房地产板块'),
-        '医药':(['医药','医疗','药品','疫苗'],'医药板块'),
-        '消费':(['消费','零售','电商','家电','白酒'],'消费板块'),
-        '军工':(['军工','国防','武器','军事'],'军工板块'),
-        '光伏':(['光伏','太阳能','硅料'],'光伏板块')
+        'AI':(['人工智能','AI','大模型','深度学习','智能体'],'AI板块'),
+        '新能源车':(['新能源车','电动车','锂电池','充电桩','固态电池'],'新能源车板块'),
+        '银行':(['降准','降息','银行','信贷','利率','LPR'],'银行板块'),
+        '房地产':(['房地产','房价','楼市','购房','收储'],'房地产板块'),
+        '医药':(['医药','医疗','药品','疫苗','创新药'],'医药板块'),
+        '消费':(['消费','零售','电商','家电','白酒','以旧换新'],'消费板块'),
+        '军工':(['军工','国防','武器','军事','航天'],'军工板块'),
+        '光伏':(['光伏','太阳能','硅料','储能'],'光伏板块'),
+        '机器人':(['机器人','人形机器人','自动化','智能制造'],'机器人板块'),
+        '低空经济':(['低空','无人机','飞行汽车','eVTOL'],'低空经济板块'),
+        '数据要素':(['数据要素','数据资产','数据交易','东数西算'],'数据要素板块'),
+        '量子计算':(['量子','量子计算','量子通信'],'量子计算板块'),
     }
-    results = []
-    for k,(kws,sec) in sector_map.items():
-        if any(kw in text for kw in kws): results.append({'sector':sec,'type':'利好'})
-    if any(w in text for w in ['下跌','暴跌','崩盘','制裁','关税','加息']):
-        for r in results: r['type']='利空'
-    return results[:3]
+
+    # 情感词库
+    bull_words = ['利好','大涨','涨停','增长','突破','中标','签约','回购','增持','分红',
+                  '放量','翻倍','新高','获批','政策支持','补贴','订单','超预期',
+                  '扭亏','盈利','改善','复苏','反弹','开放','合作','放宽','降准','降息']
+    bear_words = ['利空','大跌','跌停','暴跌','亏损','处罚','调查','制裁','关税',
+                  '诉讼','退市','违约','减持','解禁','爆雷','风险','恶化','下滑',
+                  '衰退','滞涨','收紧','加息','监管','问询','警示','停产','召回']
+
+    # 判断情感
+    bull_score = sum(1 for w in bull_words if w in text)
+    bear_score = sum(1 for w in bear_words if w in text)
+    if bull_score > bear_score: sentiment = '利好'
+    elif bear_score > bull_score: sentiment = '利空'
+    else: sentiment = '中性'
+
+    # 匹配板块
+    sectors = []
+    for k, (kws, sec) in sector_map.items():
+        if any(kw in text for kw in kws):
+            sectors.append({'sector': sec, 'sentiment': sentiment})
+
+    return {'sectors': sectors[:3], 'sentiment': sentiment}
 
 def extract_reminder(text):
     kw = {'止损':'严格执行止损','追高':'避免追高','仓位':'注意仓位','贪婪':'克服贪婪','纪律':'坚守纪律','冲动':'避免冲动','耐心':'保持耐心','回撤':'控制回撤'}
@@ -226,84 +251,153 @@ def extract_reminder(text):
 def index():
     return render_template('index.html')
 
+@app.route('/mobile')
+def mobile():
+    return render_template('mobile.html')
+
 # 扫描缓存（5分钟内不重复全量扫描）
 _SCAN_CACHE = {'time': 0, 'data': None}
+_scan_running = False
+_scan_progress = {'pct': 0, 'stage': '', 'msg': ''}
+
+def _set_progress(pct, stage, msg=''):
+    global _scan_progress
+    _scan_progress = {'pct': pct, 'stage': stage, 'msg': msg}
+# 通用API缓存（减少akshare重复调用）
+_API_CACHE = {}
+
+def _cached_api(key, ttl=300):
+    """返回缓存数据，若过期返回None"""
+    entry = _API_CACHE.get(key)
+    if entry and (time.time() - entry['time']) < ttl:
+        return entry['data']
+    return None
+
+def _set_api_cache(key, data):
+    _API_CACHE[key] = {'time': time.time(), 'data': data}
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze():
-    if not is_trading_day():
-        wd = get_weekday()
-        msg = '周末休市，请在工作日进行扫描' if wd >= 5 else '今日非交易日，数据可能不是最新'
-        return jsonify({'status': 'non_trading', 'message': msg, 'stocks': [], 'total': 0})
-
-    # 5分钟内返回缓存
+    # 如果已有缓存且未过期，直接返回
     now = time.time()
     if _SCAN_CACHE['data'] and (now - _SCAN_CACHE['time']) < 300:
         cached = _SCAN_CACHE['data'].copy()
         cached['cached'] = True
         return jsonify(cached)
 
-    pool = _get_pool_snapshot()
-    if pool is None or len(pool) == 0:
-        if _SCAN_CACHE['data']:
-            cached = _SCAN_CACHE['data'].copy()
-            cached['cached'] = True
-            cached['status'] = 'stale'
-            return jsonify(cached)
-        return jsonify({'status': 'error', 'message': '行情数据获取失败，请稍后重试（可能为非交易日或网络异常）', 'stocks': [], 'total': 0})
-    pool = pool[~pool['名称'].str.contains('ST|退')]
-    pool = pool[pool['总市值']>50e8]; pool = pool[pool['最新价']>3]
-    codes = pool['代码'].tolist()
-    candidates = []
-    with ProcessPoolExecutor(max_workers=8) as ex:
-        futures = {ex.submit(calculate_comprehensive_score, c):c for c in codes}
-        for fut in as_completed(futures):
-            res = fut.result()
-            if res and res['signal']>40:
-                row = pool[pool['代码']==res['code']]
-                if len(row)>0:
-                    r = row.iloc[0]
-                    res['name'] = r['名称']; res['price'] = r['最新价']; res['change_pct'] = r['涨跌幅']
-                    candidates.append(res)
+    if not is_trading_day():
+        wd = get_weekday()
+        msg = '周末休市，请在工作日进行扫描' if wd >= 5 else '今日非交易日，数据可能不是最新'
+        return jsonify({'status': 'non_trading', 'message': msg, 'stocks': [], 'total': 0})
 
-    # AI委员会自动分析前5只
-    if AI_AVAILABLE:
-        for i, candidate in enumerate(candidates[:5]):
-            try:
-                stock_data = {
-                    'code': candidate['code'], 'latest_price': candidate['price'],
-                    'change_pct': candidate['change_pct'], 'rsi': candidate['rsi'],
-                    'adx': candidate['adx'], 'volume_ratio': candidate['volume_ratio'],
-                    'momentum_5d': candidate['momentum_5d'],
-                    'priority_reason': candidate['priority_reason'],
-                    'basic_info': candidate.get('basic_info', {})
-                }
+    # 如果已有扫描线程在跑，返回进度
+    if _scan_running:
+        return jsonify({'status': 'scanning', 'message': '扫描进行中，请等待...'})
+
+    # 启动后台扫描
+    def _bg_scan():
+        global _scan_running, _SCAN_CACHE
+        _scan_running = True
+        try:
+            _set_progress(0, '权重更新', '更新因子权重...')
+            try: update_weights_internal()
+            except: pass
+
+            _set_progress(5, '股票池', '获取全市场股票池...')
+            pool = _get_pool_snapshot()
+            if pool is None or len(pool) == 0:
+                return
+            pool = pool[~pool['名称'].str.contains('ST|退')]
+            pool = pool[pool['总市值'] > 50e8]
+            pool = pool[pool['最新价'] > 3]
+            pool = pool[pool['涨跌幅'].abs() < 9.5]
+
+            pool['abs_chg'] = pool['涨跌幅'].abs()
+            pool['score_chg'] = pool['abs_chg'].apply(lambda x: 10 if 1 < x < 7 else (5 if 0.3 < x <= 1 else 1))
+            pool = pool.sort_values('score_chg', ascending=False)
+            codes = pool.head(80)['代码'].tolist()
+
+            from concurrent.futures import ThreadPoolExecutor as TPE
+            # Step 1: 快速预筛（仅SQLite缓存，不调akshare基本面）
+            _set_progress(15, '预筛', f'快速预筛{len(codes)}只...')
+            with TPE(max_workers=48) as ex:
+                prescores = list(ex.map(quick_prescreen, codes))
+            top_codes = [p['code'] for p in sorted(prescores, key=lambda x: x['prescore'], reverse=True)[:40]]
+
+            # Step 2: 全量评分（只需40只）
+            candidates = []
+            total_todo = len(top_codes)
+            done_count = 0
+            _set_progress(30, '评分', f'全量评分0/{total_todo}...')
+            with TPE(max_workers=48) as ex:
+                futures = {ex.submit(calculate_comprehensive_score, c): c for c in top_codes}
+                for fut in as_completed(futures):
+                    try:
+                        res = fut.result(timeout=30)
+                        if res and res['signal'] > 30:
+                            row = pool[pool['代码'] == res['code']]
+                            if len(row) > 0:
+                                r = row.iloc[0]
+                                res['name'] = r['名称']; res['price'] = r['最新价']; res['change_pct'] = r['涨跌幅']
+                                candidates.append(res)
+                    except Exception:
+                        pass
+                    done_count += 1
+                    if done_count % 5 == 0:
+                        _set_progress(30 + int(50 * done_count / total_todo), '评分', f'全量评分{done_count}/{total_todo}...')
+
+            # AI
+            _set_progress(85, 'AI分析', 'AI委员会决策中...')
+            if AI_AVAILABLE:
                 try:
-                    news = ak.stock_info_global_em().head(10).to_dict('records')
+                    news_cache = get_global_news_cached()
+                    ai_news = news_cache.head(10).to_dict('records') if news_cache is not None else []
                 except:
-                    news = []
-                positions = load_positions()
-                ai_result = ai_committee_decision(stock_data, news, positions)
-                candidate['ai_decision'] = ai_result.get('decision', 'PASS')
-                candidate['ai_summary'] = ai_result.get('summary', '')
-                candidate['ai_technical_score'] = ai_result.get('technical_score', 50)
-                candidate['ai_fundamental_score'] = ai_result.get('fundamental_score', 50)
-                candidate['ai_risk_score'] = ai_result.get('risk_score', 50)
-                candidate['ai_risk_level'] = ai_result.get('risk_level', '未知')
-                candidate['ai_position_pct'] = ai_result.get('position_pct', 10)
-                if ai_result.get('decision') == 'BUY':
-                    candidate['signal'] = min(100, candidate['signal'] + 10)
-                else:
-                    candidate['signal'] = max(0, candidate['signal'] - 5)
-            except Exception as e:
-                candidate['ai_decision'] = 'ERROR'
-                candidate['ai_summary'] = f'AI分析失败: {str(e)[:50]}'
+                    ai_news = []
+                positions_cache = load_positions()
+                for candidate in candidates[:5]:
+                    try:
+                        stock_data = {
+                            'code': candidate['code'], 'latest_price': candidate['price'],
+                            'change_pct': candidate['change_pct'], 'rsi': candidate['rsi'],
+                            'adx': candidate['adx'], 'volume_ratio': candidate['volume_ratio'],
+                            'momentum_5d': candidate['momentum_5d'],
+                            'priority_reason': candidate['priority_reason'],
+                            'basic_info': candidate.get('basic_info', {})
+                        }
+                        ai_result = ai_committee_decision(stock_data, ai_news, positions_cache)
+                        candidate['ai_decision'] = ai_result.get('decision', 'PASS')
+                        candidate['ai_summary'] = ai_result.get('summary', '')
+                        if ai_result.get('decision') == 'BUY':
+                            candidate['signal'] = min(100, candidate['signal'] + 10)
+                    except Exception:
+                        pass
 
-    candidates.sort(key=lambda x:x['signal'], reverse=True)
-    result = {'status': 'ok', 'stocks': candidates[:15], 'total': len(candidates)}
-    _SCAN_CACHE['time'] = time.time()
-    _SCAN_CACHE['data'] = {'status': 'ok', 'stocks': candidates[:15], 'total': len(candidates)}
-    return jsonify(result)
+            _set_progress(95, 'AI分析', 'AI决策完成，整理结果...')
+            candidates.sort(key=lambda x: x['signal'], reverse=True)
+            _set_progress(100, '完成', '扫描完成')
+            _SCAN_CACHE['time'] = time.time()
+            _SCAN_CACHE['data'] = {'status': 'ok', 'stocks': candidates[:15], 'total': len(candidates)}
+        except Exception as e:
+            _SCAN_CACHE['data'] = {'status': 'error', 'message': f'扫描异常: {str(e)[:80]}', 'stocks': [], 'total': 0}
+        finally:
+            _scan_running = False
+
+    threading.Thread(target=_bg_scan, daemon=True).start()
+    return jsonify({'status': 'scanning', 'message': '扫描已启动，预计60-90秒完成，请稍后查看...'})
+
+
+@app.route('/api/scan_status', methods=['GET'])
+def scan_status():
+    """轮询扫描状态"""
+    if _scan_running:
+        return jsonify({'status': 'scanning', 'message': _scan_progress['msg'], 'progress': _scan_progress})
+    now = time.time()
+    if _SCAN_CACHE['data'] and (now - _SCAN_CACHE['time']) < 3600:
+        cached = _SCAN_CACHE['data'].copy()
+        cached['cached'] = _SCAN_CACHE['time'] > now - 300
+        return jsonify(cached)
+    return jsonify({'status': 'idle', 'message': '点击扫描开始'})
 
 @app.route('/api/sell_check', methods=['POST'])
 def sell_check():
@@ -314,7 +408,7 @@ def sell_check():
     try:
         cp = chg = name = None
         try:
-            spot = ak.stock_zh_a_spot_em()
+            spot = _get_pool_snapshot()
             row = spot[spot['代码']==code]
             if len(row)>0:
                 cp = float(row['最新价'].values[0])
@@ -404,6 +498,7 @@ def buy():
     if any(p['code']==code for p in pos): return jsonify({'error':'已持有'}),400
     pos.append({'code':code,'buy_price':price,'buy_time':datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),'shares':100})
     save_positions(pos)
+    _API_CACHE.pop('stats', None)
     return jsonify({'ok':True})
 
 @app.route('/api/position/sell', methods=['POST'])
@@ -414,15 +509,35 @@ def sell():
     if not target: return jsonify({'error':'未持仓'}),400
     profit = (price-target['buy_price'])*target['shares']
     trade = {'code':code,'buy_price':target['buy_price'],'sell_price':price,'buy_time':target['buy_time'],'sell_time':datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),'profit':round(profit,2),'profit_pct':round((price-target['buy_price'])/target['buy_price']*100,2)}
-    trades = load_trades(); trades.append(trade); save_trades(trades)
-    pos.remove(target); save_positions(pos)
+    trades = load_trades(); trades.append(trade)
+    pos.remove(target)
+    save_transaction(pos, trades)
     try: _attribute_trade_to_factors(trade)
     except: pass
+    try: update_weights_internal()
+    except: pass
+    _API_CACHE.pop('stats', None)
+    _API_CACHE.pop('factor_learning', None)
     return jsonify({'ok':True,'trade':trade})
+
+@app.route('/api/position/<code>', methods=['DELETE'])
+def delete_position(code):
+    """直接删除持仓，不留交易记录"""
+    pos = load_positions()
+    target = next((p for p in pos if p['code']==code), None)
+    if not target: return jsonify({'error':'未持仓'}), 404
+    pos.remove(target)
+    save_positions(pos)
+    _API_CACHE.pop('stats', None)
+    return jsonify({'ok':True})
 
 @app.route('/api/stats', methods=['GET'])
 def stats_route():
-    return jsonify(calc_stats())
+    cached = _cached_api('stats', 60)
+    if cached: return jsonify(cached)
+    result = calc_stats()
+    _set_api_cache('stats', result)
+    return jsonify(result)
 
 @app.route('/api/trades', methods=['GET'])
 def get_trades_route():
@@ -498,53 +613,85 @@ def pet_reminder():
 
 @app.route('/api/news', methods=['GET'])
 def news():
+    cached = _cached_api('news', 120)
+    if cached: return jsonify(cached)
     news_list = []
     today = datetime.date.today()
     today_str = today.strftime('%Y-%m-%d')
 
-    try:
-        express = ak.stock_info_global_em()
-        if express is not None and len(express) > 0:
-            for _, row in express.head(30).iterrows():
-                title = str(row.get('title', ''))
-                content = str(row.get('content', '')) if 'content' in row else ''
-                news_time = str(row.get('datetime', ''))
-                sectors = analyze_news_sectors(title, content)
-                news_list.append({'title': title, 'time': news_time, 'source': '快讯', 'content': content, 'sectors': sectors})
-    except Exception as e:
-        print(f"东方财富快讯获取失败: {e}")
+    # 并发抓取三个新闻源
+    def fetch_eastmoney():
+        items = []
+        try:
+            express = ak.stock_info_global_em()
+            if express is not None and len(express) > 0:
+                for _, row in express.head(30).iterrows():
+                    title = str(row.get('title', ''))
+                    content = str(row.get('content', '')) if 'content' in row else ''
+                    news_time = str(row.get('datetime', ''))
+                    analysis = analyze_news_sectors(title, content)
+                    items.append({'title': title, 'time': news_time, 'source': '快讯',
+                                  'content': content, 'sentiment': analysis['sentiment'],
+                                  'sectors': analysis['sectors']})
+        except Exception as e:
+            print(f"东方财富快讯获取失败: {e}")
+        return items
 
-    try:
-        import requests as req
-        sina_url = "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&k=&num=20&page=1"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        resp = req.get(sina_url, headers=headers, timeout=10)
-        sina_data = resp.json()
-        for item in sina_data.get('result', {}).get('data', []):
-            title = item.get('title', '')
-            intro = item.get('intro', '')
-            ctime = item.get('ctime', '')
-            try:
-                news_time = datetime.datetime.fromtimestamp(int(ctime)).strftime('%Y-%m-%d %H:%M')
-            except:
-                news_time = ''
-            sectors = analyze_news_sectors(title, intro)
-            news_list.append({'title': title, 'time': news_time, 'source': '新浪财经', 'content': intro, 'sectors': sectors})
-    except Exception as e:
-        print(f"新浪财经新闻获取失败: {e}")
+    def fetch_sina():
+        items = []
+        try:
+            import requests as req
+            sina_url = "https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&k=&num=20&page=1"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            resp = req.get(sina_url, headers=headers, timeout=10)
+            sina_data = resp.json()
+            for item in sina_data.get('result', {}).get('data', []):
+                title = item.get('title', '')
+                intro = item.get('intro', '')
+                ctime = item.get('ctime', '')
+                try:
+                    news_time = datetime.datetime.fromtimestamp(int(ctime)).strftime('%Y-%m-%d %H:%M')
+                except:
+                    news_time = ''
+                analysis = analyze_news_sectors(title, intro)
+                items.append({'title': title, 'time': news_time, 'source': '新浪财经',
+                              'content': intro, 'sentiment': analysis['sentiment'],
+                              'sectors': analysis['sectors']})
+        except Exception as e:
+            print(f"新浪财经新闻获取失败: {e}")
+        return items
 
-    try:
-        wd = today.weekday()
-        cctv_date = today if wd < 5 else today - datetime.timedelta(days=wd - 4)
-        cctv = ak.news_cctv(date=cctv_date.strftime('%Y%m%d'))
-        if cctv is not None and len(cctv) > 0:
-            for _, row in cctv.head(10).iterrows():
-                title = str(row.get('title', ''))
-                content = str(row.get('content', '')) if 'content' in row else ''
-                sectors = analyze_news_sectors(title, content)
-                news_list.append({'title': title, 'time': cctv_date.strftime('%Y%m%d'), 'source': '新闻联播', 'content': content, 'sectors': sectors})
-    except: pass
+    def fetch_cctv():
+        items = []
+        try:
+            wd = today.weekday()
+            cctv_date = today if wd < 5 else today - datetime.timedelta(days=wd - 4)
+            cctv = ak.news_cctv(date=cctv_date.strftime('%Y%m%d'))
+            if cctv is not None and len(cctv) > 0:
+                for _, row in cctv.head(10).iterrows():
+                    title = str(row.get('title', ''))
+                    content = str(row.get('content', '')) if 'content' in row else ''
+                    analysis = analyze_news_sectors(title, content)
+                    items.append({'title': title, 'time': cctv_date.strftime('%Y-%m-%d') + ' 19:00',
+                                  'source': '新闻联播', 'content': content,
+                                  'sentiment': analysis['sentiment'],
+                                  'sectors': analysis['sectors']})
+        except: pass
+        return items
 
+    results = {}
+    threads = [
+        threading.Thread(target=lambda: results.update({'eastmoney': fetch_eastmoney()})),
+        threading.Thread(target=lambda: results.update({'sina': fetch_sina()})),
+        threading.Thread(target=lambda: results.update({'cctv': fetch_cctv()})),
+    ]
+    for t in threads: t.start()
+    for t in threads: t.join(timeout=12)
+
+    for key in ['eastmoney', 'sina', 'cctv']:
+        news_list.extend(results.get(key, []))
+
+    # 去重排序
     seen = set(); uniq = []
     for n in news_list:
         if n['title'] and n['title'] not in seen and len(n['title']) > 3:
@@ -552,68 +699,94 @@ def news():
     uniq.sort(key=lambda x: str(x.get('time', '')), reverse=True)
     today_news = [n for n in uniq if str(n.get('time', ''))[:10] == today_str]
     other = [n for n in uniq if str(n.get('time', ''))[:10] != today_str]
-    return jsonify((today_news + other)[:30])
+    result = (today_news + other)[:30]
+
+    # AI 摘要：取前10条用DeepSeek生成市场简报
+    ai_digest = ''
+    if AI_AVAILABLE and len(today_news) >= 3:
+        try:
+            digest_text = '\n'.join([f"- [{n['source']}] {n['title']}" for n in (today_news + other)[:10]])
+            ai_digest = _deepseek_chat([
+                {"role": "system", "content": "用3-5句话总结这些新闻对A股的影响，重点说哪些板块受益、哪些要回避。简洁有力，不超过150字。"},
+                {"role": "user", "content": digest_text}
+            ], max_tokens=200)
+        except: pass
+
+    result = {'items': result, 'ai_digest': ai_digest or ''}
+    _set_api_cache('news', result)
+    return jsonify(result)
 
 @app.route('/api/moneyflow', methods=['GET'])
 def moneyflow():
+    cached = _cached_api('moneyflow', 120)
+    if cached: return jsonify(cached)
     try:
         today = datetime.date.today(); wd = today.weekday()
         td = today-datetime.timedelta(days=1) if wd==5 else (today-datetime.timedelta(days=2) if wd==6 else today)
-        df = ak.stock_board_industry_name_em()[['板块名称','涨跌幅','换手率','主力净流入']].dropna()
-        df['涨跌幅'] = pd.to_numeric(df['涨跌幅'],errors='coerce')
-        df['主力净流入'] = pd.to_numeric(df['主力净流入'],errors='coerce')
-        df = df.dropna()
-        return jsonify({'date':str(td),'top_inflow':df.nlargest(10,'主力净流入').to_dict('records'),'top_outflow':df.nsmallest(10,'主力净流入').to_dict('records')})
-    except: return jsonify({'date':'','top_inflow':[],'top_outflow':[]})
+        df = ak.stock_fund_flow_industry()
+        df = df.rename(columns={'行业': '板块名称', '行业-涨跌幅': '涨跌幅', '净额': '主力净流入', '流入资金': '流入', '流出资金': '流出'})
+        df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
+        df['主力净流入'] = pd.to_numeric(df['主力净流入'], errors='coerce') * 1e8  # 亿元 -> 元
+        df = df.dropna(subset=['涨跌幅', '主力净流入'])
+        result = {'date':str(td),'top_inflow':df.nlargest(10,'主力净流入').to_dict('records'),'top_outflow':df.nsmallest(10,'主力净流入').to_dict('records')}
+        _set_api_cache('moneyflow', result)
+        return jsonify(result)
+    except Exception as e:
+        print(f"moneyflow error: {e}")
+        return jsonify({'date':'','top_inflow':[],'top_outflow':[]})
 
 @app.route('/api/heatmap', methods=['GET'])
 def heatmap():
+    cached = _cached_api('heatmap', 120)
+    if cached: return jsonify(cached)
     try:
         today = datetime.date.today(); wd = today.weekday()
         if wd>=5: today = today-datetime.timedelta(days=wd-4)
-        df = ak.stock_board_industry_name_em()[['板块名称','涨跌幅','换手率']].dropna()
-        df['涨跌幅'] = pd.to_numeric(df['涨跌幅'],errors='coerce')
-        df = df.dropna(subset=['涨跌幅']).sort_values('涨跌幅',ascending=False)
-        top20=df.head(20); bottom5=df.tail(5)
-        return jsonify({'date':str(today),'data':pd.concat([top20,bottom5]).drop_duplicates().to_dict('records')})
-    except: return jsonify({'date':'','data':[]})
+        df = ak.stock_fund_flow_industry()
+        df = df.rename(columns={'行业': '板块名称', '行业-涨跌幅': '涨跌幅', '净额': '主力净流入'})
+        df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
+        df = df.dropna(subset=['涨跌幅']).sort_values('涨跌幅', ascending=False)
+        top20 = df.head(20); bottom5 = df.tail(5)
+        result = {'date':str(today),'data':pd.concat([top20,bottom5]).drop_duplicates().to_dict('records')}
+        _set_api_cache('heatmap', result)
+        return jsonify(result)
+    except Exception as e:
+        print(f"heatmap error: {e}")
+        return jsonify({'date':'','data':[]})
 
 @app.route('/api/sector_rotation', methods=['GET'])
 def sector_rotation():
     try:
-        df = ak.stock_board_industry_name_em()[['板块名称','涨跌幅','换手率','主力净流入']].dropna()
-        df['涨跌幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
+        df = ak.stock_fund_flow_industry()
+        df = df.rename(columns={'行业': '板块名称', '净额': '主力净流入'})
+        df['涨跌幅'] = pd.to_numeric(df['行业-涨跌幅'], errors='coerce')
         df['主力净流入'] = pd.to_numeric(df['主力净流入'], errors='coerce')
-        df = df.dropna()
         top_in = df.nlargest(5,'主力净流入')[['板块名称','主力净流入']].to_dict('records')
         return jsonify({'top_inflow':top_in,'advice':'建议关注主力资金持续流入的板块'})
-    except: return jsonify({'error':'数据获取失败'})
+    except Exception as e:
+        print(f"sector_rotation error: {e}")
+        return jsonify({'error':'数据获取失败'})
 
 @app.route('/api/market_ticker', methods=['GET'])
 def market_ticker():
-    """实时大盘指数（新浪源）"""
-    import urllib.request
+    """实时大盘指数（新浪源 + 腾讯fallback）"""
+    cached = _cached_api('market_ticker', 10)
+    if cached: return jsonify(cached)
     try:
-        url = "http://hq.sinajs.cn/list=sh000001,sz399001,sz399006,sh000300,sh000688"
-        req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read().decode("gbk", errors="ignore")
+        df = ak.stock_zh_index_spot_sina()
         result = {}
-        for line in raw.strip().split(";\n"):
-            if not line.strip():
-                continue
-            parts = line.split('="')
-            if len(parts) != 2:
-                continue
-            code = parts[0].replace("var hq_str_", "")
-            values = parts[1].strip('";').split(",")
-            if len(values) >= 4:
-                price = float(values[1]) if values[1] else 0
-                yesterday = float(values[2]) if values[2] else 0
-                change_pct = round((price - yesterday) / yesterday * 100, 2) if yesterday else 0
-                result[code] = {"name": values[0], "price": round(price, 2), "change_pct": change_pct}
+        target_codes = ['sh000001', 'sz399001', 'sz399006', 'sh000300', 'sh000688']
+        target_names = {'sh000001': '上证指数', 'sz399001': '深证成指', 'sz399006': '创业板指', 'sh000300': '沪深300', 'sh000688': '科创50'}
+        for _, row in df.iterrows():
+            code = str(row['代码'])
+            if code in target_codes:
+                price = float(row['最新价'])
+                change_pct = float(row['涨跌幅'])
+                result[code] = {"name": target_names.get(code, str(row['名称'])), "price": round(price, 2), "change_pct": round(change_pct, 2)}
+        _set_api_cache('market_ticker', result)
         return jsonify(result)
     except Exception as e:
+        print(f"market_ticker error: {e}")
         return jsonify({})
 
 
@@ -626,7 +799,7 @@ def market_env_route():
 def data_quality():
     issues = []
     try:
-        df = ak.stock_zh_a_spot_em()
+        df = _get_pool_snapshot()
         if len(df) < 1000: issues.append("股票池数量异常少")
         if df['最新价'].isna().sum()>0: issues.append("存在价格缺失")
     except Exception as e:
@@ -1059,6 +1232,60 @@ def market_indicator_match():
     except Exception as e:
         return jsonify({'error': f'获取失败: {str(e)}'}), 500
 
+@app.route('/api/factor_learning', methods=['GET'])
+def factor_learning():
+    """返回因子学习状态：策略因子 + 全部基础因子"""
+    try:
+        strategy_stats = load_json(FACTOR_STATS_FILE, {})
+        strategy_names = {
+            'ma_cross': '均线金叉', 'chan_theory': '缠论底分型', 'wave_theory': '波浪理论',
+            'bull_trend': '多头趋势', 'hot_topic': '热点题材', 'event_driven': '事件驱动',
+            'growth_quality': '成长质量', 'revaluation': '预期重估',
+            'dragon_rising': '蛟龙出海', 'mountain_climb': '上山爬坡', 'resid_z': '统计超卖',
+            'boll_squeeze': '布林突破', 'volume_price': '量价配合',
+            'golden_cross_triple': '三金叉共振', 'oversold_reversal': '超跌反转',
+            'momentum_breakout': '动量突破', 'low_vol_breakout': '低波突破',
+            'consecutive_yang': '连阳蓄势'
+        }
+        factors = []
+        # 1. 策略因子
+        for key, name in strategy_names.items():
+            ss = strategy_stats.get(key, {})
+            t = ss.get('total', 0)
+            w = ss.get('wins', 0)
+            factors.append({
+                'key': key, 'name': name, 'type': '策略',
+                'total_trades': t,
+                'wins': round(w, 1),
+                'win_rate': round(w / t * 100, 1) if t > 0 else 0,
+                'weight': ss.get('weight', 1.0),
+                'total_profit': ss.get('total_profit', 0),
+                'last_trade_pnl': ss.get('last_trade_pnl', 0),
+                'boost': ss.get('boost', 1.0),
+                'ic': ss.get('ic', 0),
+            })
+        # 2. 基础因子（从 FACTOR_REGISTRY）
+        for key, info in FACTOR_REGISTRY.items():
+            factors.append({
+                'key': key, 'name': info.get('description', key), 'type': info.get('category', '基础'),
+                'total_trades': 0, 'wins': 0, 'win_rate': 0,
+                'weight': info.get('weight', 1.0),
+                'total_profit': 0, 'last_trade_pnl': 0, 'boost': 1.0,
+                'ic': info.get('ic_30d', 0),
+            })
+        factors.sort(key=lambda x: x['weight'], reverse=True)
+
+        total_trades = len(load_trades())
+        last_update = WEIGHT_LAST_UPDATE.strftime('%Y-%m-%d %H:%M:%S') if WEIGHT_LAST_UPDATE else '尚未更新'
+
+        return jsonify({
+            'factors': factors,
+            'total_trades': total_trades,
+            'last_update': last_update
+        })
+    except Exception as e:
+        return jsonify({'error': f'获取失败: {str(e)}'}), 500
+
 @app.route('/api/long_term_eval', methods=['POST'])
 def long_term_eval():
     try:
@@ -1150,12 +1377,12 @@ def kline_chart(code):
         ma10 = pd.Series(closes).rolling(10).mean().values
         ma20 = pd.Series(closes).rolling(20).mean().values
 
-        fig, ax = plt.subplots(figsize=(14, 7), facecolor='#0a0a0a')
-        ax.set_facecolor('#0a0a0a')
+        fig, ax = plt.subplots(figsize=(14, 7), facecolor='#FFFFFF')
+        ax.set_facecolor('#FFFFFF')
 
         width = 0.6
         for i in range(len(closes)):
-            color = '#3aaf7c' if closes[i] >= opens[i] else '#d94a5d'
+            color = '#F44336' if closes[i] >= opens[i] else '#26A65B'
             body_bottom = min(opens[i], closes[i])
             body_height = abs(closes[i] - opens[i])
             if body_height < 0.001: body_height = 0.001
@@ -1163,37 +1390,37 @@ def kline_chart(code):
                                    facecolor=color, edgecolor=color, linewidth=0.5))
             ax.plot([i, i], [lows[i], highs[i]], color=color, linewidth=0.8)
 
-        ax.plot(range(len(closes)), ma5, color='#e8a020', linewidth=1.2, label='MA5')
+        ax.plot(range(len(closes)), ma5, color='#f0b90b', linewidth=1.2, label='MA5')
         ax.plot(range(len(closes)), ma10, color='#5b8cce', linewidth=1.2, label='MA10')
-        ax.plot(range(len(closes)), ma20, color='#d94a5d', linewidth=1.2, label='MA20')
+        ax.plot(range(len(closes)), ma20, color='#F44336', linewidth=1.2, label='MA20')
 
         for i in range(1, len(closes)):
             if all(not np.isnan(m[i]) and not np.isnan(m[i-1]) for m in [ma5, ma10]):
                 if ma5[i-1] <= ma10[i-1] and ma5[i] > ma10[i]:
                     ax.annotate('金叉', (i, lows[i] - (highs[i]-lows[i])*0.3),
-                                fontsize=8, color='#e8a020', ha='center',
-                                bbox=dict(boxstyle='round,pad=0.2', facecolor='#1a1a1a', edgecolor='#e8a020', alpha=0.8))
+                                fontsize=8, color='#f0b90b', ha='center',
+                                bbox=dict(boxstyle='round,pad=0.2', facecolor='#F8F9FA', edgecolor='#f0b90b', alpha=0.9))
 
         for i in range(20, len(closes)):
             if closes[i] >= opens[i]:
                 if closes[i-1] <= ma5[i-1] and closes[i-1] <= ma10[i-1] and closes[i-1] <= ma20[i-1]:
                     if closes[i] > ma5[i] and closes[i] > ma10[i] and closes[i] > ma20[i]:
                         ax.annotate('蛟龙\n出海', (i, highs[i] + (highs[i]-lows[i])*0.2),
-                                    fontsize=9, color='#ffc940', ha='center', weight='bold',
-                                    bbox=dict(boxstyle='round,pad=0.3', facecolor='#2a0a00', edgecolor='#ffc940', alpha=0.9))
+                                    fontsize=9, color='#F44336', ha='center', weight='bold',
+                                    bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFF0F0', edgecolor='#F44336', alpha=0.9))
 
         ax.set_xticks(range(0, len(dates), max(1, len(dates)//8)))
-        ax.set_xticklabels([dates[i] for i in range(0, len(dates), max(1, len(dates)//8))], color='#999', fontsize=9)
-        ax.tick_params(axis='y', colors='#999')
+        ax.set_xticklabels([dates[i] for i in range(0, len(dates), max(1, len(dates)//8))], color='#4B5563', fontsize=9)
+        ax.tick_params(axis='y', colors='#4B5563')
         ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_color('#1f1f1f'); ax.spines['bottom'].set_color('#1f1f1f')
-        ax.grid(axis='y', color='#1a1a1a', linewidth=0.5)
-        ax.legend(loc='upper left', fontsize=9, facecolor='#0a0a0a', edgecolor='#1f1f1f', labelcolor='#999')
-        ax.set_title(f'{code} 近30日K线图', color='#e8a020', fontsize=14, fontweight='bold', pad=15)
+        ax.spines['left'].set_color('#E0E3EB'); ax.spines['bottom'].set_color('#E0E3EB')
+        ax.grid(axis='y', color='#E4E7EB', linewidth=0.5)
+        ax.legend(loc='upper left', fontsize=9, facecolor='#FFFFFF', edgecolor='#E0E3EB', labelcolor='#4B5563')
+        ax.set_title(f'{code} 近30日K线图', color='#1A1A1A', fontsize=14, fontweight='bold', pad=15)
 
         buf = BytesIO()
         plt.tight_layout()
-        plt.savefig(buf, format='png', dpi=100, facecolor='#0a0a0a', bbox_inches='tight')
+        plt.savefig(buf, format='png', dpi=100, facecolor='#FFFFFF', bbox_inches='tight')
         plt.close()
         buf.seek(0)
         return jsonify({'code': code, 'image': 'data:image/png;base64,' + base64.b64encode(buf.read()).decode()})
@@ -1351,4 +1578,4 @@ def refresh_data():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
