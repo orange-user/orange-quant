@@ -43,6 +43,108 @@ def compute_kdj(high,low,close,n=9):
     return float(k.iloc[-1]), float(d.iloc[-1]), float(j.iloc[-1])
 
 
+# ==================== ArrayManager 统一指标计算 ====================
+class ArrayManager:
+    """统一管理K线数据, 所有指标通过它算 (移植自vnpy)"""
+    def __init__(self, size=100):
+        self.size = size
+        self.inited = False
+        self.open = np.zeros(size)
+        self.high = np.zeros(size)
+        self.low = np.zeros(size)
+        self.close = np.zeros(size)
+        self.volume = np.zeros(size)
+
+    def update_bar(self, o, h, l, c, v):
+        """推进一根K线"""
+        self.open = np.roll(self.open, -1)
+        self.high = np.roll(self.high, -1)
+        self.low = np.roll(self.low, -1)
+        self.close = np.roll(self.close, -1)
+        self.volume = np.roll(self.volume, -1)
+        self.open[-1] = o
+        self.high[-1] = h
+        self.low[-1] = l
+        self.close[-1] = c
+        self.volume[-1] = v
+        if not self.inited and self.close[0] != 0:
+            self.inited = True
+
+    def sma(self, n, array=False):
+        result = pd.Series(self.close).rolling(n).mean().values
+        if array:
+            return result
+        return result[-1]
+
+    def ema(self, n, array=False):
+        result = pd.Series(self.close).ewm(span=n, adjust=False).mean().values
+        if array:
+            return result
+        return result[-1]
+
+    def macd(self, fast=12, slow=26, signal=9):
+        close_series = pd.Series(self.close)
+        ema_fast = close_series.ewm(span=fast, adjust=False).mean()
+        ema_slow = close_series.ewm(span=slow, adjust=False).mean()
+        dif = ema_fast - ema_slow
+        dea = dif.ewm(span=signal, adjust=False).mean()
+        hist = dif - dea
+        return dif.values[-1], dea.values[-1], hist.values[-1]
+
+    def rsi(self, n=14, array=False):
+        close_series = pd.Series(self.close)
+        delta = close_series.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
+        avg_gain = gain.rolling(n).mean()
+        avg_loss = loss.rolling(n).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        if array:
+            return rsi.values
+        return float(rsi.values[-1]) if not pd.isna(rsi.values[-1]) else 50
+
+    def atr(self, n=14, array=False):
+        """ATR (Average True Range) 波动率指标, 用于动态止损"""
+        high_series = pd.Series(self.high)
+        low_series = pd.Series(self.low)
+        close_series = pd.Series(self.close)
+        tr = pd.concat([
+            high_series - low_series,
+            (high_series - close_series.shift(1)).abs(),
+            (low_series - close_series.shift(1)).abs()
+        ], axis=1).max(axis=1)
+        result = tr.rolling(n).mean().values
+        if array:
+            return result
+        return result[-1]
+
+    def boll(self, n=20, dev=2):
+        close_series = pd.Series(self.close)
+        rm = close_series.rolling(n).mean()
+        rs = close_series.rolling(n).std()
+        upper = rm + rs * dev
+        lower = rm - rs * dev
+        bp = (close_series - lower) / (upper - lower)
+        return upper.values[-1], rm.values[-1], lower.values[-1], bp.values[-1]
+
+    def kdj(self, n=9):
+        highest = pd.Series(self.high).rolling(n).max()
+        lowest = pd.Series(self.low).rolling(n).min()
+        rsv = (pd.Series(self.close) - lowest) / (highest - lowest) * 100
+        k = rsv.ewm(com=2).mean()
+        d = k.ewm(com=2).mean()
+        j = 3 * k - 2 * d
+        return k.values[-1], d.values[-1], j.values[-1]
+
+    def cci(self, n=20):
+        tp = (pd.Series(self.high) + pd.Series(self.low) + pd.Series(self.close)) / 3
+        sma_tp = tp.rolling(n).mean()
+        mad = tp.rolling(n).apply(lambda x: np.abs(x - x.mean()).mean())
+        cci = (tp - sma_tp) / (0.015 * mad)
+        return cci.values[-1] if not pd.isna(cci.values[-1]) else 0
+
+
 # ==================== 十大策略引擎 ====================
 def strategy_ma_cross(code, closes):
     if len(closes)<20: return 0
@@ -170,6 +272,37 @@ def strategy_mountain_climb(code, closes):
 
 # ==================== 新增七大策略因子 ====================
 
+def strategy_cdl_pattern(code, closes, highs, lows, opens):
+    """TA-Lib K线形态识别 (61种)"""
+    try:
+        import talib
+        o = opens.values.astype(float)
+        h = highs.values.astype(float)
+        l = lows.values.astype(float)
+        c = closes.values.astype(float)
+        patterns = {
+            'CDL2CROWS': talib.CDL2CROWS(o, h, l, c),
+            'CDL3WHITESOLDIERS': talib.CDL3WHITESOLDIERS(o, h, l, c),
+            'CDL3BLACKCROWS': talib.CDL3BLACKCROWS(o, h, l, c),
+            'CDLMORNINGSTAR': talib.CDLMORNINGSTAR(o, h, l, c),
+            'CDLEVENINGSTAR': talib.CDLEVENINGSTAR(o, h, l, c),
+            'CDLHAMMER': talib.CDLHAMMER(o, h, l, c),
+            'CDLSHOOTINGSTAR': talib.CDLSHOOTINGSTAR(o, h, l, c),
+            'CDLENGULFING': talib.CDLENGULFING(o, h, l, c),
+            'CDLHARAMI': talib.CDLHARAMI(o, h, l, c),
+            'CDLDOJI': talib.CDLDOJI(o, h, l, c),
+        }
+        score = 0
+        for name, result in patterns.items():
+            last_val = result[-1]
+            if last_val > 0:
+                score += 5  # 看涨形态
+            elif last_val < 0:
+                score -= 3  # 看跌形态
+        return max(0, min(25, score + 10))
+    except ImportError:
+        return 0
+
 def strategy_boll_squeeze(closes, highs, lows):
     """布林带收窄突破：带窄后放量突破上轨"""
     if len(closes) < 20: return 0
@@ -197,63 +330,68 @@ def strategy_volume_price(code, closes, volumes):
     return min(20, score)
 
 def strategy_golden_cross_triple(closes, highs, lows):
-    """三金叉共振：MA金叉 + MACD金叉 + KDJ金叉"""
+    """三金叉共振：MA金叉 + MACD金叉 + KDJ金叉 — 分析显示最强冲高预测(+15%)"""
     if len(closes) < 26: return 0
     ma5 = closes.rolling(5).mean(); ma10 = closes.rolling(10).mean()
     ma_golden = ma5.iloc[-2] <= ma10.iloc[-2] and ma5.iloc[-1] > ma10.iloc[-1]
+    ma_already = ma5.iloc[-1] > ma10.iloc[-1]  # 已金叉(不要求当天)
     ef = closes.ewm(span=12).mean(); es = closes.ewm(span=26).mean()
     dif = ef - es; dea = dif.ewm(span=9).mean()
     macd_golden = dif.iloc[-2] <= dea.iloc[-2] and dif.iloc[-1] > dea.iloc[-1]
+    macd_bull = dif.iloc[-1] > 0 and dif.iloc[-1] > dea.iloc[-1]  # MACD多头
     lowest = lows.rolling(9).min(); highest = highs.rolling(9).max()
     rsv = (closes - lowest) / (highest - lowest) * 100
     k = rsv.ewm(com=2).mean(); d = k.ewm(com=2).mean()
     kdj_golden = k.iloc[-2] <= d.iloc[-2] and k.iloc[-1] > d.iloc[-1]
-    count = sum([ma_golden, macd_golden, kdj_golden])
-    if count >= 3: return 25
-    if count >= 2: return 15
-    if count >= 1: return 8
+    kdj_bull = k.iloc[-1] > d.iloc[-1]  # KDJ多头
+    count_golden = sum([ma_golden, macd_golden, kdj_golden])
+    count_bull = sum([ma_already, macd_bull, kdj_bull])
+    # 三金叉同步出现最强
+    if count_golden >= 3: return 42
+    if count_golden >= 2: return 28
+    # 已形成多头排列也有较强信号
+    if count_bull >= 3: return 25
+    if count_bull >= 2: return 15
+    if count_golden >= 1: return 10
     return 0
 
 def strategy_oversold_reversal(closes, highs, lows):
-    """超跌反弹：RSI超卖 + 底背离 + KDJ低位金叉"""
+    """超跌反弹（分析显示预测力~0%，已降权）"""
     if len(closes) < 20: return 0
     rsi = compute_rsi(closes)
     k, d, j = compute_kdj(highs, lows, closes)
-    # RSI超卖区
-    rsi_score = 10 if rsi < 30 else (5 if rsi < 40 else 0)
-    # KDJ低位
-    kdj_score = 10 if j < 0 else (5 if j < 20 else 0)
-    # 底背离：价格新低但RSI不创新低
+    rsi_score = 5 if rsi < 30 else (2 if rsi < 40 else 0)
+    kdj_score = 5 if j < 0 else (2 if j < 20 else 0)
     divergence = 0
     if len(closes) >= 15:
         price_5d_low = closes.iloc[-5:].min()
         price_10d_low = closes.iloc[-15:-5].min()
         if price_5d_low < price_10d_low and rsi > 30:
-            divergence = 10
-    return min(25, rsi_score + kdj_score + divergence)
+            divergence = 5
+    return min(15, rsi_score + kdj_score + divergence)
 
 def strategy_momentum_breakout(highs, closes):
-    """强势动量：创N日新高 + 均线多头排列"""
+    """强势动量：创N日新高 + 均线多头排列（分析显示预测力+6%，已提权）"""
     if len(closes) < 60: return 0
     high_20d = highs.iloc[-20:].max()
     high_60d = highs.iloc[-60:].max()
     cur = closes.iloc[-1]
     ma5 = closes.rolling(5).mean(); ma20 = closes.rolling(20).mean(); ma60 = closes.rolling(60).mean()
     score = 0
-    if cur >= high_20d * 0.98: score += 10  # 接近20日新高
-    if cur >= high_60d * 0.98: score += 5   # 接近60日新高
-    if ma5.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1]: score += 10  # 多头排列
-    return min(25, score)
+    if cur >= high_20d * 0.98: score += 10
+    if cur >= high_60d * 0.98: score += 10
+    if ma5.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1]: score += 12
+    if closes.iloc[-1] > ma5.iloc[-1] and ma5.iloc[-1] > ma20.iloc[-1]: score += 8
+    return min(30, score)
 
 def strategy_low_vol_breakout(closes, highs, lows):
-    """低波动突破：长期横盘后突破"""
+    """低波动突破（分析显示预测力~0%，已大幅降权）"""
     if len(closes) < 30: return 0
-    # 前20天振幅小
     amplitude_20d = ((highs.iloc[-20:] - lows.iloc[-20:]) / closes.iloc[-20:]).mean()
     cur = closes.iloc[-1]; ma20 = closes.rolling(20).mean().iloc[-1]
-    if amplitude_20d < 0.03:  # 振幅<3%，横盘整理
-        if cur > ma20 * 1.02: return 20  # 放量突破
-        if cur > ma20: return 10
+    if amplitude_20d < 0.03:
+        if cur > ma20 * 1.02: return 8
+        if cur > ma20: return 4
     return 0
 
 def strategy_consecutive_yang(closes, highs, lows, opens):
@@ -271,6 +409,16 @@ def strategy_consecutive_yang(closes, highs, lows, opens):
     if yang_count >= 3 and total_body > 0.01: return 12
     if yang_count >= 2: return 6
     return 0
+
+
+def strategy_cointegration(code):
+    """协整套利：利用同板块配对统计均值回归"""
+    try:
+        from cointegration import get_cointegration_score
+        score, z, _ = get_cointegration_score(code)
+        return score
+    except Exception:
+        return 0
 
 
 # ==================== 市场环境 ====================
@@ -305,23 +453,27 @@ def quick_prescreen(code):
     # 综合预评分
     score = 0
 
-    # RSI: 30-55 最佳区间
-    if 30 <= rsi <= 55:
+    # RSI: 50-70 最佳区间（分析显示冲高股RSI集中在50-70）
+    if 50 <= rsi <= 70:
         score += 30
-    elif 25 <= rsi <= 65:
-        score += 15
+    elif 30 <= rsi < 50:
+        score += 20
+    elif 70 < rsi <= 80:
+        score += 12
     elif rsi < 25:
-        score += 10  # 极度超卖可能有反弹
+        score += 5  # 超卖反弹预测力很差
     else:
-        score += 0   # RSI过高，先不加分
+        score += 0
 
-    # 动量: 轻微回调或温和上涨最佳
-    if -3 <= mom5 <= 5:
+    # 动量: 轻微上涨最佳（分析显示冲高股mom5均值为+5.2%）
+    if 2 <= mom5 <= 8:
         score += 25
-    elif 5 < mom5 <= 10:
-        score += 15
-    elif -8 <= mom5 < -3:
-        score += 10  # 超跌反弹候选
+    elif 0 <= mom5 < 2:
+        score += 20
+    elif 8 < mom5 <= 15:
+        score += 12
+    elif -5 <= mom5 < 0:
+        score += 10
     else:
         score += 0
 
@@ -333,11 +485,15 @@ def quick_prescreen(code):
     else:
         score += 0
 
-    # 均线位置: 接近或在MA20上方不远
-    if -3 <= price_vs_ma20 <= 5:
+    # 均线位置: 在MA20上方更强（分析显示71%冲高股已在MA20之上）
+    if 3 <= price_vs_ma20 <= 12:
+        score += 20
+    elif 0 <= price_vs_ma20 < 3:
         score += 15
-    elif -8 <= price_vs_ma20 < -3:
+    elif -5 <= price_vs_ma20 < 0:
         score += 8
+    elif price_vs_ma20 >= 12:
+        score += 10  # 涨幅过大可能回调
     else:
         score += 0
 
@@ -348,6 +504,28 @@ def quick_prescreen(code):
         score += 5
     else:
         score += 0
+
+    # ==== AL Brooks 轻量上下文 (无ADX版, 仅用趋势K线+区间位置) ====
+    opens = df['open']
+    trend_bars = 0
+    for i in range(-1, -6, -1):
+        if len(closes) < abs(i): break
+        body = abs(closes.iloc[i] - opens.iloc[i])
+        rng = highs.iloc[i] - lows.iloc[i]
+        if rng <= 0 or body / rng < 0.50: break
+        close_pos = (closes.iloc[i] - lows.iloc[i]) / rng
+        if closes.iloc[i] >= opens.iloc[i] and close_pos >= 0.50: trend_bars += 1
+        elif closes.iloc[i] < opens.iloc[i] and close_pos <= 0.50: trend_bars += 1
+        else: break
+    range_20d = highs.iloc[-20:].max() - lows.iloc[-20:].min()
+    pos_in_range = 0.5
+    if range_20d > 0:
+        pos_in_range = (closes.iloc[-1] - lows.iloc[-20:].min()) / range_20d
+    mid_range = 0.35 <= pos_in_range <= 0.65
+    if trend_bars >= 3 and not mid_range:
+        score = int(score * 1.10)  # 轻量趋势加成
+    elif mid_range and trend_bars < 2:
+        score = int(score * 0.90)  # 微幅下调震荡
 
     return {
         'code': code,
@@ -403,6 +581,67 @@ def get_market_indicator_match():
 
     match["weight_adjustments"] = adjustments
     return match
+
+
+def classify_context_state(df, adx_val, plus_di, minus_di):
+    """AL Brooks 背景上下文分类器
+    将股票K线背景分类为 TREND / TRADING_RANGE / TRANSITION
+    返回: (multiplier, context_label)
+      TREND → 1.15, 震荡 → 0.90, 过渡 → 1.00
+    """
+    if df is None or len(df) < 20:
+        return 1.0, 'unknown'
+
+    closes = df['close']; highs = df['high']; lows = df['low']
+    opens = df['open']
+
+    # ADX > 25 为趋势行情
+    adx_trend = adx_val is not None and adx_val > 25
+
+    # 连续趋势K线判定: 实体 >= 50% + 收盘在自身半区
+    trend_bars = 0
+    for i in range(-1, -6, -1):
+        if len(closes) < abs(i):
+            break
+        body = abs(closes.iloc[i] - opens.iloc[i])
+        rng = highs.iloc[i] - lows.iloc[i]
+        if rng <= 0 or body / rng < 0.50:
+            break
+        close_pos = (closes.iloc[i] - lows.iloc[i]) / rng
+        if closes.iloc[i] >= opens.iloc[i] and close_pos >= 0.50:
+            trend_bars += 1  # 看涨趋势K线
+        elif closes.iloc[i] < opens.iloc[i] and close_pos <= 0.50:
+            trend_bars += 1  # 看跌趋势K线
+        else:
+            break
+    consecutive_trend = trend_bars >= 3
+
+    # 20日价格区间位置: 中间30% = 震荡
+    range_20d = highs.iloc[-20:].max() - lows.iloc[-20:].min()
+    pos_in_range = 0.5
+    if range_20d > 0:
+        pos_in_range = (closes.iloc[-1] - lows.iloc[-20:].min()) / range_20d
+    mid_range = 0.35 <= pos_in_range <= 0.65
+
+    # DI方向
+    di_bull = plus_di is not None and minus_di is not None and plus_di > minus_di
+    di_bear = plus_di is not None and minus_di is not None and minus_di > plus_di
+
+    # 判定
+    is_trend = (adx_trend and consecutive_trend) or (adx_trend and not mid_range)
+    is_range = mid_range and not adx_trend
+
+    if is_trend:
+        multiplier = 1.15
+        context = 'trend_bull' if di_bull else ('trend_bear' if di_bear else 'trend')
+    elif is_range:
+        multiplier = 0.90
+        context = 'trading_range'
+    else:
+        multiplier = 1.0
+        context = 'transition'
+
+    return multiplier, context
 
 
 def detect_indicator_cycle(factor_name, lookback=252):
@@ -465,15 +704,539 @@ def detect_indicator_cycle(factor_name, lookback=252):
         return result
 
 
-# ==================== 综合评分引擎 ====================
+# ==================== 新移植策略因子 ====================
+
+def strategy_pullback_buy(code, closes, highs, lows):
+    """回调买入: 长期上升趋势+短期回调到支撑 (从abu ABuFactorBuyTrend移植)"""
+    if len(closes) < 60:
+        return 0
+    ma20 = closes.rolling(20).mean()
+    ma60 = closes.rolling(60).mean()
+    cur = closes.iloc[-1]
+    cur_ma20 = ma20.iloc[-1]
+    cur_ma60 = ma60.iloc[-1]
+    # 长期多头趋势 (MA20 > MA60)
+    long_bull = cur_ma20 > cur_ma60 * 1.05
+    # 短期回调 (最近3天有下跌)
+    short_pullback = any(closes.iloc[-i] < closes.iloc[-i-1] for i in range(1, 4))
+    # 价格在MA20附近 (回调到支撑)
+    near_support = abs(cur - cur_ma20) / cur_ma20 < 0.02
+    if long_bull and short_pullback and near_support:
+        return 20
+    if long_bull and near_support:
+        return 10
+    return 0
+
+
+def strategy_dual_thrust(code, closes, highs, lows, opens):
+    """DualThrust通道突破: K×昨日振幅算通道 (从vnpy DualThrustStrategy移植)"""
+    if len(closes) < 3:
+        return 0
+    yesterday = -2 if len(closes) >= 2 else -1
+    k1, k2 = 0.4, 0.4  # 通道系数
+    prev_high = highs.iloc[yesterday]
+    prev_low = lows.iloc[yesterday]
+    prev_close = closes.iloc[yesterday]
+    # 昨日振幅
+    day_range = max(prev_high - prev_low, prev_high - prev_close, prev_close - prev_low)
+    if day_range <= 0:
+        return 0
+    open_price = opens.iloc[-1]
+    upper = open_price + k1 * day_range
+    lower = open_price - k2 * day_range
+    cur = closes.iloc[-1]
+    if cur > upper:
+        return 20  # 突破上轨, 看涨
+    elif cur < lower:
+        return 15  # 跌破下轨, 看跌(反向)
+    return 0
+
+
+def strategy_king_keltner(code, closes, highs, lows):
+    """KingKeltner通道: EMA±ATR×倍数 (从vnpy KingKeltnerStrategy移植)"""
+    if len(closes) < 30:
+        return 0
+    ema = closes.ewm(span=20, adjust=False).mean()
+    tr = pd.concat([
+        highs - lows,
+        (highs - closes.shift(1)).abs(),
+        (lows - closes.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(10).mean()
+    dev = 1.6  # 倍数
+    upper = ema + atr * dev
+    lower = ema - atr * dev
+    cur = closes.iloc[-1]
+    if cur > upper.iloc[-1] and atr.iloc[-1] > 0:
+        return 18  # 突破上轨
+    elif cur < lower.iloc[-1] and atr.iloc[-1] > 0:
+        return 12  # 跌破下轨(反向)
+    return 0
+
+
+def strategy_weekday_effect(code, closes):
+    """周几效应: 统计历史盈利的星期几 (从abu ABuFactorBuyWD移植)"""
+    try:
+        from data import get_stock_daily_cached
+        df = get_stock_daily_cached(code, 120)
+        if df is None or len(df) < 40:
+            return 0
+        df['weekday'] = pd.to_datetime(df['date']).dt.weekday
+        df['next_ret'] = df['close'].pct_change(-1).shift(-1)
+        win_rates = df.groupby('weekday')['next_ret'].apply(lambda x: (x > 0).mean())
+        today_wd = datetime.datetime.now().weekday()
+        rate = win_rates.get(today_wd, 0.5)
+        if rate > 0.55:
+            return 12
+        elif rate > 0.52:
+            return 6
+        return 0
+    except Exception:
+        return 0
+
+
+def strategy_two_day_yang(code, closes, opens):
+    """两连阳加速: 连续2天上涨且第二天加速 (从abu AbuTwoDayBuy移植)"""
+    if len(closes) < 5:
+        return 0
+    if not hasattr(opens, 'iloc') or len(opens) < 5:
+        return 0
+    d1 = (closes.iloc[-2] - opens.iloc[-2]) / opens.iloc[-2]
+    d2 = (closes.iloc[-1] - opens.iloc[-1]) / opens.iloc[-1]
+    if d2 > d1 > 0:
+        return 15
+    if d1 > 0 and d2 > 0:
+        return 8
+    return 0
+
+
+def strategy_topk_momentum(code, closes, highs, lows, volumes):
+    """Top-K动量: 综合多维度打分 (从vnpy AlphaStrategy启发)"""
+    if len(closes) < 20:
+        return 0
+    score = 0
+    # 动量
+    mom5 = (closes.iloc[-1] - closes.iloc[-5]) / closes.iloc[-5] * 100
+    if 2 <= mom5 <= 8:
+        score += 8
+    # RSI
+    delta = closes.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    if 40 <= rsi.iloc[-1] <= 60:
+        score += 7
+    # 量比
+    vol_ratio = volumes.iloc[-1] / volumes.rolling(20).mean().iloc[-1]
+    if 0.8 <= vol_ratio <= 2.5:
+        score += 5
+    return min(20, score)
+
+
+# ==================== 新移植策略因子结束 ====================
+
+
+# ==================== AL Brooks 价格行为函数 ====================
+
+def compute_signal_bar_quality(df):
+    """信号K线质量评分 (SBQ) — AL Brooks 8标准
+    对最新日K线打分，评估其作为交易信号的"干净程度"
+    范围 0-30，缩放到 0-15 加成
+    """
+    if df is None or len(df) < 3:
+        return 0, 'none'
+
+    closes = df['close'].values; opens = df['open'].values
+    highs = df['high'].values; lows = df['low'].values
+    volumes = df['volume'].values if 'volume' in df.columns else None
+
+    i = -1
+    cur_close = closes[i]; cur_open = opens[i]
+    cur_high = highs[i]; cur_low = lows[i]
+    cur_range = cur_high - cur_low
+    if cur_range <= 0:
+        return 0, 'none'
+
+    body = abs(cur_close - cur_open)
+    body_pct = body / cur_range
+
+    score = 0
+
+    # 1) 实体 >= 50% 范围 → +5(趋势K线)
+    if body_pct >= 0.50:
+        score += 5
+
+    # 2-3) 上下影线计算
+    if cur_close >= cur_open:  # 阳线
+        upper_wick = cur_high - cur_close
+        lower_wick = cur_open - cur_low
+        is_bull = True
+    else:  # 阴线
+        upper_wick = cur_high - cur_open
+        lower_wick = cur_close - cur_low
+        is_bull = False
+
+    def safe_pct(wick, rng):
+        return wick / rng if rng > 0 else 0.5
+
+    upper_pct = safe_pct(upper_wick, cur_range)
+    lower_pct = safe_pct(lower_wick, cur_range)
+
+    if is_bull:
+        if upper_pct < 0.25: score += 3    # 上方阻力小
+        if lower_pct < 0.25: score += 3    # 下方支撑确认
+    else:
+        if lower_pct < 0.25: score += 3    # 下方无支撑
+        if upper_pct < 0.25: score += 3    # 上方阻力确认
+
+    # 4) 收盘在范围上25%(看涨)/下25%(看跌)
+    close_pos = (cur_close - cur_low) / cur_range
+    if is_bull:
+        if close_pos >= 0.75: score += 5
+        elif close_pos >= 0.50: score += 2
+    else:
+        if close_pos <= 0.25: score += 5
+        elif close_pos <= 0.50: score += 2
+
+    # 5) 与前K线重叠最小 → +4
+    prev_high = highs[-2]; prev_low = lows[-2]
+    overlap = max(0, min(cur_high, prev_high) - max(cur_low, prev_low))
+    overlap_pct = overlap / cur_range
+    if overlap_pct < 0.20:
+        score += 4
+
+    # 6) 反转前K线收盘方向 → +4
+    prev_dir = 1 if closes[-2] >= opens[-2] else -1
+    cur_dir = 1 if cur_close >= cur_open else -1
+    if cur_dir != prev_dir and body_pct > 0.30:
+        score += 4
+
+    # 7) 收盘超前2根极值 → +4
+    prior_max = max(highs[-2], highs[-3])
+    prior_min = min(lows[-2], lows[-3])
+    if cur_dir == 1 and cur_close > prior_max:
+        score += 4
+    elif cur_dir == -1 and cur_close < prior_min:
+        score += 4
+
+    # 8) 量比 > 1.2 → +2
+    if volumes is not None and len(volumes) >= 20:
+        vol_ma20 = volumes[-20:].mean()
+        vol_ratio = volumes[-1] / vol_ma20 if vol_ma20 > 0 else 1.0
+        if vol_ratio > 1.2:
+            score += 2
+
+    if is_bull:
+        bar_type = 'bull_strong' if score >= 20 else 'bull_weak'
+    else:
+        bar_type = 'bear_strong' if score >= 20 else 'bear_weak'
+    return min(30, score), bar_type
+
+
+def detect_inside_outside_bar(df):
+    """Inside Bar / Outside Bar 检测 (非talib依赖)
+    返回: (type, score_adj)
+      type: 'inside' | 'outside_bull' | 'outside_bear' | 'outside_neutral' | 'none'
+    """
+    if df is None or len(df) < 3:
+        return 'none', 0
+
+    cur_high = df['high'].iloc[-1]; cur_low = df['low'].iloc[-1]
+    cur_open = df['open'].iloc[-1]; cur_close = df['close'].iloc[-1]
+    prev_high = df['high'].iloc[-2]; prev_low = df['low'].iloc[-2]
+    prev_open = df['open'].iloc[-2]; prev_close = df['close'].iloc[-2]
+
+    is_inside = cur_high <= prev_high and cur_low >= prev_low
+    is_outside = cur_high >= prev_high and cur_low <= prev_low
+
+    if is_inside:
+        return 'inside', -3  # 犹豫信号
+
+    if is_outside:
+        cur_bull = cur_close > cur_open
+        prev_bull = prev_close > prev_open
+        if cur_bull and not prev_bull:
+            return 'outside_bull', 5
+        elif not cur_bull and prev_bull:
+            return 'outside_bear', 5
+        else:
+            return 'outside_neutral', 3
+
+    return 'none', 0
+
+
+def strategy_three_push(code, closes, highs, lows, volumes):
+    """三推反转 (AL Brooks Three Push)
+    识别三次同向推动 + 动能衰竭 → 趋势反转信号
+    评分 0-25
+    """
+    if len(closes) < 20:
+        return 0
+
+    n = len(closes)
+    lookback = min(n, 30)
+    h = highs.iloc[-lookback:].values
+    lo = lows.iloc[-lookback:].values
+    c = closes.iloc[-lookback:].values
+    v = volumes.iloc[-lookback:].values if len(volumes) >= lookback else None
+
+    # 找局部高点
+    pushes_up = []
+    for i in range(1, len(h) - 1):
+        if h[i] > h[i - 1] and h[i] > h[i + 1]:
+            pushes_up.append((i, h[i]))
+
+    score = 0
+
+    # 看跌三推顶
+    if len(pushes_up) >= 3:
+        p1, p2, p3 = pushes_up[-3], pushes_up[-2], pushes_up[-1]
+        if p1[1] < p2[1] < p3[1]:  # 高点依次抬高
+            idx3 = p3[0]
+            # 第三推动作幅
+            rng3 = max(h[idx3] - lo[idx3], 0.01)
+            body3 = abs(c[idx3] - lo[idx3])
+            body_ratio3 = min(body3 / rng3, 1.0)
+            # RSI 背离检查
+            delta = closes.diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = -delta.where(delta < 0, 0.0)
+            avg_g = gain.rolling(14).mean()
+            avg_l = loss.rolling(14).mean()
+            rs = avg_g / avg_l
+            rsi_s = 100 - (100 / (1 + rs))
+            offset_p1 = p1[0]
+            offset_p3 = p3[0]
+            abs_idx_p1 = len(closes) - lookback + offset_p1
+            abs_idx_p3 = len(closes) - lookback + offset_p3
+            if 0 <= abs_idx_p1 < len(rsi_s) and 0 <= abs_idx_p3 < len(rsi_s):
+                rsi_p1 = rsi_s.iloc[abs_idx_p1]
+                rsi_p3 = rsi_s.iloc[abs_idx_p3]
+                rsi_div = rsi_p3 < rsi_p1  # 价格新高RSI新低
+            else:
+                rsi_div = False
+
+            if body_ratio3 < 0.40 and rsi_div:
+                score = max(score, 25)  # 实体衰竭 + 背离
+            elif body_ratio3 < 0.40:
+                score = max(score, 15)  # 仅实体衰竭
+            else:
+                score = max(score, 10)  # 仅三推结构
+
+    # 找局部低点(看涨三推底)
+    pushes_dn = []
+    for i in range(1, len(lo) - 1):
+        if lo[i] < lo[i - 1] and lo[i] < lo[i + 1]:
+            pushes_dn.append((i, lo[i]))
+
+    if len(pushes_dn) >= 3:
+        p1, p2, p3 = pushes_dn[-3], pushes_dn[-2], pushes_dn[-1]
+        if p1[1] > p2[1] > p3[1]:  # 低点依次降低
+            idx3 = p3[0]
+            rng3 = max(h[idx3] - lo[idx3], 0.01)
+            # 保守实体估算(用low近似open)
+            body3 = abs(c[idx3] - lo[idx3])
+            body_ratio3 = min(body3 / rng3, 1.0)
+            delta = closes.diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = -delta.where(delta < 0, 0.0)
+            avg_g = gain.rolling(14).mean()
+            avg_l = loss.rolling(14).mean()
+            rs = avg_g / avg_l
+            rsi_s = 100 - (100 / (1 + rs))
+            offset_p1 = p1[0]; offset_p3 = p3[0]
+            abs_idx_p1 = len(closes) - lookback + offset_p1
+            abs_idx_p3 = len(closes) - lookback + offset_p3
+            if 0 <= abs_idx_p1 < len(rsi_s) and 0 <= abs_idx_p3 < len(rsi_s):
+                rsi_p3 = rsi_s.iloc[abs_idx_p3]
+                rsi_p1 = rsi_s.iloc[abs_idx_p1]
+                rsi_div = rsi_p3 > rsi_p1  # 价格新低RSI新高
+            else:
+                rsi_div = False
+            if rsi_div:
+                score = max(score, 22)
+            else:
+                score = max(score, 12)
+
+    return min(25, score)
+
+
+def strategy_climax(code, closes, highs, lows, opens, volumes):
+    """买入/卖出高潮检测 (AL Brooks Buying/Selling Climax)
+    趋势加速 + 放量 + 长影线 → 力竭反转
+    返回: (score: 0-20, climax_type: 'buying'|'selling'|'none')
+    """
+    if len(closes) < 10:
+        return 0, 'none'
+
+    # 最近5根K线实体大小
+    bodies = []
+    for i in range(-1, -6, -1):
+        if abs(i) > len(closes):
+            break
+        body = abs(closes.iloc[i] - opens.iloc[i])
+        bodies.append(body)
+
+    if len(bodies) < 4:
+        return 0, 'none'
+
+    # 实体加速判定
+    bodies_rev = list(reversed(bodies))
+    accelerating = all(bodies_rev[i] > bodies_rev[i - 1] for i in range(1, len(bodies_rev)))
+
+    # 最后一根K线分析
+    cur_close = closes.iloc[-1]; cur_open = opens.iloc[-1]
+    cur_high = highs.iloc[-1]; cur_low = lows.iloc[-1]
+    final_range = max(cur_high - cur_low, 0.01)
+    final_body = bodies[-1]
+    final_body_ratio = final_body / final_range
+
+    if cur_close >= cur_open:
+        upper_wick = cur_high - cur_close
+        lower_wick = cur_open - cur_low
+        trend = 'buying'
+    else:
+        upper_wick = cur_high - cur_open
+        lower_wick = cur_close - cur_low
+        trend = 'selling'
+
+    upper_ratio = upper_wick / final_range
+    lower_ratio = lower_wick / final_range
+
+    # 买入高潮: 长上影(买方力竭) + 实体适中
+    buy_climax = (trend == 'buying' and upper_ratio > 0.30 and
+                  0.35 < final_body_ratio < 0.85)
+    # 卖出高潮: 长下影(卖方力竭) + 实体适中
+    sell_climax = (trend == 'selling' and lower_ratio > 0.30 and
+                   0.35 < final_body_ratio < 0.85)
+
+    # 成交量爆发
+    vol_ma20 = volumes.rolling(20).mean().iloc[-1]
+    vol_ratio = volumes.iloc[-1] / vol_ma20 if vol_ma20 > 0 else 1.0
+    volume_surge = vol_ratio > 1.5
+
+    # 收盘未在极值端
+    close_pos = (cur_close - cur_low) / final_range
+    close_rev = (trend == 'buying' and close_pos < 0.60) or \
+                (trend == 'selling' and close_pos > 0.40)
+
+    # 判定高潮类型和强度
+    if buy_climax or sell_climax:
+        climax_type = 'buying' if buy_climax else 'selling'
+        if accelerating and volume_surge and close_rev:
+            return 20, climax_type
+        elif volume_surge:
+            return 15, climax_type
+        elif accelerating:
+            return 12, climax_type
+        else:
+            return 8, climax_type
+    elif volume_surge and accelerating and close_rev:
+        return 5, 'none'
+
+    return 0, 'none'
+
+
+# ==================== 短线过热风险检测 ====================
+
+def detect_overheat_risk(closes, highs, lows, opens, rsi_val):
+    """检测短线过热风险
+    连阳过多、连续上影线、短线涨幅过快、乖离过大
+    返回: (risk_score, [reasons])
+      风险分 0-30，正数表示要扣减的分数
+    """
+    if len(closes) < 20:
+        return 0, []
+
+    risk = 0
+    reasons = []
+
+    # --- 1. 连阳天数 ---
+    yang_count = 0
+    for i in range(len(closes) - 1, -1, -1):
+        if closes.iloc[i] > opens.iloc[i]:
+            yang_count += 1
+        else:
+            break
+    if yang_count >= 7:
+        risk += 12
+        reasons.append(f'{yang_count}连阳过热(扣{12})')
+    elif yang_count >= 5:
+        risk += 6
+        reasons.append(f'{yang_count}连阳偏热(扣{6})')
+
+    # --- 2. 连续上影线 ---
+    long_upper_count = 0
+    for i in range(-1, -4, -1):
+        if abs(i) > len(closes):
+            break
+        rng = highs.iloc[i] - lows.iloc[i]
+        if rng > 0:
+            upper = (highs.iloc[i] - max(closes.iloc[i], opens.iloc[i])) / rng
+            if upper > 0.35:
+                long_upper_count += 1
+    if long_upper_count >= 2:
+        risk += 8
+        reasons.append(f'连续{int(long_upper_count)}天上影>35%(扣{8})')
+
+    # --- 3. 短线涨幅过快 ---
+    mom5 = (closes.iloc[-1] - closes.iloc[-5]) / closes.iloc[-5] * 100
+    if mom5 > 15:
+        risk += 12
+        reasons.append(f'5日涨{mom5:.0f}%过快(扣12)')
+    elif mom5 > 10:
+        risk += 8
+        reasons.append(f'5日涨{mom5:.0f}%偏快(扣8)')
+    elif mom5 > 8:
+        risk += 4
+        reasons.append(f'5日涨{mom5:.0f}%略快(扣4)')
+
+    # --- 4. 乖离20日线 ---
+    ma20 = closes.rolling(20).mean().iloc[-1]
+    dev = (closes.iloc[-1] - ma20) / ma20 * 100
+    if dev > 12:
+        risk += 12
+        reasons.append(f'偏离20日线{dev:.0f}%过大(扣12)')
+    elif dev > 8:
+        risk += 8
+        reasons.append(f'偏离20日线{dev:.0f}%偏大(扣8)')
+    elif dev > 5:
+        risk += 3
+        reasons.append(f'偏离20日线{dev:.0f}%(扣3)')
+
+    # --- 5. RSI连续超买 ---
+    if len(closes) >= 10:
+        overbought_days = 0
+        for i in range(-1, -6, -1):
+            if abs(i) > len(closes):
+                break
+            window = closes.iloc[max(0, len(closes) + i - 14): len(closes) + i]
+            if len(window) >= 14:
+                delta = window.diff()
+                g = delta.where(delta > 0, 0).mean()
+                l = -delta.where(delta < 0, 0).mean()
+                rs = g / l if l > 0 else 999
+                r = 100 - 100 / (1 + rs)
+                if r > 65:
+                    overbought_days += 1
+        if overbought_days >= 3:
+            risk += 5
+            reasons.append(f'近5日{overbought_days}天RSI>65(扣5)')
+
+    return min(30, risk), reasons
 def calculate_comprehensive_score(code):
     df = get_stock_daily_cached(code, 60)
     if df is None or len(df)<20: return None
     closes = df['close']; highs = df['high']; lows = df['low']
     rsi = compute_rsi(closes)
     adx_val, plus_di, minus_di = compute_adx(highs,lows,closes)
+    # ==== AL Brooks 背景上下文分类 ====
+    context_mult, context_label = classify_context_state(df, adx_val, plus_di, minus_di)
     macd_line,_,macd_hist = compute_macd(closes)
-    k,_,_ = compute_kdj(highs,lows,closes)
+    k,d,j_val = compute_kdj(highs,lows,closes)
     mom5 = (closes.iloc[-1]-closes.iloc[-5])/closes.iloc[-5]*100
     vol_ratio = df['volume_ratio'].iloc[-1] if 'volume_ratio' in df.columns else 1.0
     rm = closes.rolling(20).mean(); rs = closes.rolling(20).std()
@@ -512,7 +1275,8 @@ def calculate_comprehensive_score(code):
                'boll_squeeze': '布林突破', 'volume_price': '量价配合',
                'golden_cross_triple': '三金叉共振', 'oversold_reversal': '超跌反转',
                'momentum_breakout': '动量突破', 'low_vol_breakout': '低波突破',
-               'consecutive_yang': '连阳蓄势'}
+               'consecutive_yang': '连阳蓄势', 'cointegration': '协整套利',
+               'three_push': '三推衰竭反转', 'climax': '趋势高潮'}
 
     volumes = df['volume'] if 'volume' in df.columns else closes
     opens = df['open'] if 'open' in df.columns else closes
@@ -534,6 +1298,17 @@ def calculate_comprehensive_score(code):
     s_momentum = strategy_momentum_breakout(highs, closes)
     s_lowvol = strategy_low_vol_breakout(closes, highs, lows)
     s_yang = strategy_consecutive_yang(closes, highs, lows, opens)
+    s_coint = strategy_cointegration(code)
+    # 新移植策略
+    s_pullback = strategy_pullback_buy(code, closes, highs, lows)
+    s_dual_thrust = strategy_dual_thrust(code, closes, highs, lows, opens)
+    s_kk = strategy_king_keltner(code, closes, highs, lows)
+    s_topk = strategy_topk_momentum(code, closes, highs, lows, volumes)
+    s_weekday = strategy_weekday_effect(code, closes)
+    s_two_yang = strategy_two_day_yang(code, closes, opens)
+    # Brooks 策略
+    s_three_push = strategy_three_push(code, closes, highs, lows, volumes)
+    s_climax, s_climax_type = strategy_climax(code, closes, highs, lows, opens, volumes)
 
     score = 0
     reasons = []
@@ -578,25 +1353,164 @@ def calculate_comprehensive_score(code):
     if s_lowvol>=15: reasons.append("低波突破")
     adj_yang = get_adjusted_weight('consecutive_yang'); score += int(s_yang*adj_yang)
     if s_yang>=15: reasons.append("连阳蓄势")
+    adj_coint = get_adjusted_weight('cointegration'); score += int(s_coint*adj_coint)
+    if s_coint>=15: reasons.append("协整套利(强)")
+    elif s_coint>=10: reasons.append("协整套利")
+
+    # 新移植策略
+    score += int(s_pullback * get_adjusted_weight('pullback_buy', 1.0))
+    if s_pullback>=15: reasons.append("回调买入")
+    score += int(s_dual_thrust * 0.8)
+    if s_dual_thrust>=15: reasons.append("DualThrust突破")
+    score += int(s_kk * 0.8)
+    if s_kk>=15: reasons.append("KingKeltner突破")
+    score += int(s_topk * 0.6)
+    if s_topk>=10: reasons.append("Top-K动量")
+    score += int(s_weekday * 0.6)
+    if s_weekday>=10: reasons.append("周几效应")
+    score += int(s_two_yang * 0.8)
+    if s_two_yang>=10: reasons.append("两连阳加速")
+
+    # ==== AL Brooks 策略分数 ====
+    score += int(s_three_push * 0.8)
+    if s_three_push >= 20: reasons.append("三推衰竭反转(强)")
+    elif s_three_push >= 15: reasons.append("三推衰竭反转")
+    elif s_three_push >= 10: reasons.append("三推结构")
+    # ==== 高潮信号处理 (方向修正：买入高潮扣分，卖出高潮加分) ====
+    if s_climax > 0 and s_climax_type == 'buying':
+        # 买入高潮 → 风险扣分（买盘力竭，次日不易高开）
+        penalty = int(s_climax * 0.7)
+        score -= penalty
+        reasons.append(f"买入高潮(扣{penalty})")
+    elif s_climax > 0 and s_climax_type == 'selling':
+        # 卖出高潮 → 加分（卖盘力竭，潜在反转）
+        bonus = int(s_climax * 0.4)
+        score += bonus
+        reasons.append(f"卖出高潮(+{bonus})")
+
+    # ==== 短线过热风险检测 ====
+    overheat_risk, heat_reasons = detect_overheat_risk(closes, highs, lows, opens, rsi)
+    if overheat_risk > 0:
+        score = max(0, score - overheat_risk)
+        reasons.extend(heat_reasons)
+
+    # ==== AL Brooks 信号K线质量 (SBQ) 加成 ====
+    sbq_raw, sbq_type = compute_signal_bar_quality(df)
+    io_type, io_adj = detect_inside_outside_bar(df)
+    sbq_final = int(sbq_raw / 2) + io_adj
+    score += sbq_final
+    if sbq_raw >= 20: reasons.append(f"信号K线优质(SBQ={sbq_raw})")
+    elif sbq_raw >= 15: reasons.append(f"信号K线可(SBQ={sbq_raw})")
+    if io_type != 'none': reasons.append(f"{io_type}")
 
     if 30<=rsi<=50: score += 10; reasons.append("RSI健康" + (f"(+30%)" if mkt_adj.get('RSI',1.0)>1.1 else ""))
+    # RSI超买阶梯扣分 (原仅扣5分，太轻)
+    if rsi > 75:
+        score -= 20
+        reasons.append(f"RSI{rsi:.0f}严重超买(扣20)")
+    elif rsi > 70:
+        score -= 12
+        reasons.append(f"RSI{rsi:.0f}超买(扣12)")
+    elif rsi > 65:
+        score -= 5
+        reasons.append(f"RSI{rsi:.0f}偏高(扣5)")
+    if adx_val and adx_val<20: score = int(score*0.92); reasons.append("ADX弱趋势(扣8%)")
+    if vol_ratio<0.8: score = int(score*0.92); reasons.append("缩量(扣8%)")
     if 0.1<bp<0.4: score += 10; reasons.append("布林下轨" + (f"(+30%)" if mkt_adj.get('布林下轨',1.0)>1.1 else ""))
-    if abs(r_val)<0.3: score = int(score*0.6)
+    if bp>0.85: score = int(score*0.9); reasons.append("布林上轨(扣10%)")
+    # MACD为正（分析显示+16%预测力，最强单一信号）
+    if macd_hist > 0: score += 15; reasons.append("MACD多头(+15)")
+    # KDJ超卖是反向指标：超卖股次日冲高概率低11%
+    if j_val < 20:
+        score = int(score * 0.88)
+        reasons.append("KDJ超卖(扣12%)")
+    if j_val > 80:
+        score = int(score * 0.85)
+        reasons.append("KDJ超买(扣15%)")
+    if abs(r_val)>0.7: score = int(score*0.85); reasons.append("高相关性跟风(扣15%)")
 
     score = _apply_dynamic_factors(code, df, score, reasons)
-    position_pct = 30 if score>=80 else (20 if score>=65 else (10 if score>=50 else 5))
+
+    # ==== AL Brooks 背景上下文调节器 ====
+    if context_mult != 1.0:
+        old_score = score
+        score = max(0, int(score * context_mult))
+        delta = score - old_score
+        if delta > 0:
+            reasons.append(f"趋势背景(×{context_mult:.2f}, +{delta})")
+        elif delta < 0:
+            reasons.append(f"震荡背景(×{context_mult:.2f}, {delta})")
+
+    try:
+        from kelly import calc_kelly_position
+        k_res = calc_kelly_position(code, 0, min(round(score), 100))
+        position_pct = k_res['kelly_pct']
+    except Exception:
+        position_pct = 30 if score>=80 else (20 if score>=65 else (10 if score>=50 else 5))
+
+    # CtaSignal 引擎二次评分 (新旧混合)
+    try:
+        from signal_engine import SignalEngine, BullTrendSignal, RsiSignal, VolumeSignal, \
+            MACrossSignal, ChanBreakSignal, BollChannelSignal, KDJOverboughtRisk, BollTopRisk, \
+            WeakTrendRisk, LowVolumeRisk
+        se = SignalEngine()
+        se.add_signal(MACrossSignal(weight=1.0))
+        se.add_signal(BullTrendSignal(weight=1.0))
+        se.add_signal(BollChannelSignal(weight=0.8))
+        se.add_signal(RsiSignal(weight=0.8))
+        se.add_signal(VolumeSignal(weight=0.5))
+        se.add_signal(ChanBreakSignal(weight=1.0))
+        se.add_risk(KDJOverboughtRisk())
+        se.add_risk(BollTopRisk())
+        se.add_risk(WeakTrendRisk())
+        se.add_risk(LowVolumeRisk())
+        se_result = se.evaluate(df)
+        # 新旧评分加权混合 (旧:新 = 6:4)
+        score = int(score * 0.6 + se_result['signal'] * 0.4)
+        reasons.append(f"新信号({se_result['signal']})")
+    except Exception:
+        pass
+
+    # ==== Ruflo similarity bonus ====
+    try:
+        from mcp_client import safe_search
+        query = f"Stock {code}: rsi={round(rsi,1)}, vr={round(vol_ratio,2)}, mom={round(mom5,2)}"
+        similar = safe_search(query, top_k=3)
+        if similar and len(similar) > 0:
+            avg_sig = 0
+            wins = 0
+            for r in similar:
+                meta = r.get('metadata', {})
+                if meta.get('signal'):
+                    avg_sig += meta['signal']
+            avg_sig /= len(similar)
+            win_rate = wins / len(similar) if len(similar) > 0 else 0
+            if win_rate > 0.6:
+                bonus = min(10, int(win_rate * 10))
+                score = min(100, score + bonus)
+                reasons.append(f"Ruflo相似({wins}/{len(similar)}, +{bonus})")
+            elif win_rate < 0.3 and len(similar) >= 2:
+                penalty = min(8, int((1 - win_rate) * 8))
+                score = max(0, score - penalty)
+                reasons.append(f"Ruflo相似({wins}/{len(similar)}, -{penalty})")
+    except ImportError:
+        pass
+    except Exception:
+        pass
 
     return {
         'code':code, 'name':'', 'price':0, 'change_pct':0,
         'signal': min(round(score),100),
         'rsi':round(rsi,2), 'adx':round(adx_val,2) if adx_val else 0,
-        'macd_hist':round(macd_hist,4), 'kdj_k':round(k,2),
+        'macd_hist':round(macd_hist,4), 'macd_positive':int(macd_hist > 0),
+        'kdj_k':round(k,2), 'kdj_j':round(j_val,2),
         'resid_z':round(resid_z,2), 'bb_position':round(bp,2),
         'momentum_5d':round(mom5,2), 'volume_ratio':round(vol_ratio,2),
         'priority_reason': ' + '.join(reasons[:4]) if reasons else '多因子共振',
         'position_advice': f"建议仓位{position_pct}%",
-        'strategy_scores':{'均线金叉':s_ma,'缠论':s_chan,'波浪理论':s_wave,'多头趋势':s_bull,'热点题材':s_topic,'事件驱动':s_event,'成长质量':s_growth,'预期重估':s_reval,'蛟龙出海':s_dragon,'上山爬坡':s_climb,'布林突破':s_boll,'量价配合':s_vol_price,'三金叉共振':s_triple,'超跌反转':s_oversold,'动量突破':s_momentum,'低波突破':s_lowvol,'连阳蓄势':s_yang},
-        'basic_info': info, 'sectors': sectors
+        'strategy_scores':{'均线金叉':s_ma,'缠论':s_chan,'波浪理论':s_wave,'多头趋势':s_bull,'热点题材':s_topic,'事件驱动':s_event,'成长质量':s_growth,'预期重估':s_reval,'蛟龙出海':s_dragon,'上山爬坡':s_climb,'布林突破':s_boll,'量价配合':s_vol_price,'三金叉共振':s_triple,'超跌反转':s_oversold,'动量突破':s_momentum,'低波突破':s_lowvol,'连阳蓄势':s_yang,'协整套利':s_coint,'回调买入':s_pullback,'DualThrust':s_dual_thrust,'KingKeltner':s_kk,'TopK':s_topk,'周几效应':s_weekday,'两连阳加速':s_two_yang,'信号K线质量':sbq_raw,'三推反转':s_three_push,'趋势高潮':s_climax},
+        'basic_info': info, 'sectors': sectors,
+        'brooks': {'sbq': sbq_raw, 'sbq_type': sbq_type, 'inside_outside': io_type, 'context': context_label, 'three_push': s_three_push, 'climax': s_climax, 'climax_type': s_climax_type}
     }
 
 
@@ -648,7 +1562,7 @@ def update_weights_internal():
                         'growth_quality', 'revaluation', 'hot_topic', 'event_driven',
                         'boll_squeeze', 'volume_price', 'golden_cross_triple',
                         'oversold_reversal', 'momentum_breakout', 'low_vol_breakout',
-                        'consecutive_yang']:
+                        'consecutive_yang', 'cointegration']:
             if factor not in strategy_stats:
                 strategy_stats[factor] = {'wins': 0, 'total': 0, 'weight': 1.0, 'total_profit': 0}
             strategy_stats[factor]['total'] += 1
@@ -827,6 +1741,11 @@ def _attribute_trade_to_factors(trade):
             score_map['low_vol_breakout'] = strategy_low_vol_breakout(closes, highs, lows)
             score_map['consecutive_yang'] = strategy_consecutive_yang(closes, highs, lows,
                 df['open'] if 'open' in df.columns else closes)
+            score_map['cointegration'] = strategy_cointegration(code)
+            score_map['three_push'] = strategy_three_push(code, closes, highs, lows, volumes)
+            climax_score, _ = strategy_climax(code, closes, highs, lows,
+                df['open'] if 'open' in df.columns else closes, volumes)
+            score_map['climax'] = climax_score
         except:
             pass
 
@@ -868,7 +1787,8 @@ def _attribute_trade_to_factors(trade):
             'boll_squeeze': '布林突破', 'volume_price': '量价配合',
             'golden_cross_triple': '三金叉共振', 'oversold_reversal': '超跌反转',
             'momentum_breakout': '动量突破', 'low_vol_breakout': '低波突破',
-            'consecutive_yang': '连阳蓄势'
+            'consecutive_yang': '连阳蓄势', 'cointegration': '协整套利',
+            'three_push': '三推衰竭反转', 'climax': '趋势高潮'
         }
         for sname, fname in strategy_to_factor.items():
             if sname in factor_stats and fname in FACTOR_REGISTRY:

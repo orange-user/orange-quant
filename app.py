@@ -1,4 +1,4 @@
-import time, datetime, random, json, os, subprocess, threading
+import time, datetime, random, json, os, sys, subprocess, threading
 import base64
 from io import BytesIO
 import numpy as np
@@ -34,6 +34,18 @@ except Exception as e:
 
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.json.ensure_ascii = False  # JSON输出真实UTF-8中文而非\u转义
+
+@app.after_request
+def add_charset(response):
+    """所有响应强制 charset=utf-8 + 禁用缓存(防Service Worker干扰)"""
+    ct = response.headers.get('Content-Type', '')
+    if ct and 'charset=' not in ct:
+        response.headers['Content-Type'] = ct.rstrip('; ') + '; charset=utf-8'
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 # Initialize
 init_db()
@@ -79,8 +91,30 @@ def _start_scheduler():
 
 _start_scheduler()
 
+# ========== Ruflo MCP Server ==========
+def _start_ruflo():
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.connect(('127.0.0.1', 3000))
+        s.close()
+        print('[Ruflo] MCP server already on port 3000')
+        return
+    except: pass
+    finally: s.close()
+    try:
+        proc = subprocess.Popen(
+            ['ruflo', 'mcp', 'start', '-t', 'http', '-p', '3000'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        print(f'[Ruflo] Started MCP server (PID {proc.pid})')
+    except Exception as e:
+        print(f'[Ruflo] Failed: {e}')
+
+_start_ruflo()
+
 # ==================== WeChat Bot ====================
-from wechat_bot import verify_signature, handle_message, WECHAT_TOKEN
+from wechat_bot import verify_signature, handle_message, WECHAT_TOKEN, _get_index_data
 
 @app.route('/wechat', methods=['GET', 'POST'])
 def wechat():
@@ -248,21 +282,165 @@ def extract_reminder(text):
 # ==================== 路由 ====================
 
 @app.route('/')
+@app.route('/go')
+@app.route('/reload')
 def index():
     return render_template('index.html')
+
 
 @app.route('/mobile')
 def mobile():
     return render_template('mobile.html')
 
+@app.route('/playground')
+def playground():
+    return render_template('playground.html')
+
 # 扫描缓存（5分钟内不重复全量扫描）
 _SCAN_CACHE = {'time': 0, 'data': None}
 _scan_running = False
 _scan_progress = {'pct': 0, 'stage': '', 'msg': ''}
+_AUTO_TRADE_ENABLED = False  # 自动交易开关, 网页端可切换
 
 def _set_progress(pct, stage, msg=''):
     global _scan_progress
     _scan_progress = {'pct': pct, 'stage': stage, 'msg': msg}
+
+PLANET_POST_FILE = os.path.join('data', 'planet_post_today.txt')
+PLANET_POST_LOG = os.path.join('data', 'planet_post_log.txt')
+
+def _save_planet_post(candidates):
+    """生成知识星球发帖纯文本"""
+    import datetime as dt
+    today = dt.date.today().strftime('%Y-%m-%d')
+    wd = ['周一','周二','周三','周四','周五','周六','周日'][dt.date.today().weekday()]
+
+    lines = [f'每日尾盘信号 | {today} {wd}', '']
+
+    if not candidates:
+        lines.append('今日无符合条件的信号。')
+        lines.append('')
+    else:
+        for i, s in enumerate(candidates[:3]):
+            chg = s.get('change_pct', 0)
+            arrow = '📈' if chg >= 0 else '📉'
+            sig = s.get('signal', 0)
+            level = 'STRONG强烈买入' if sig >= 80 else ('BUY建议买入' if sig >= 65 else 'WATCH观察')
+
+            risk = s.get('intraday_risk', False)
+            risk_str = f' ⚠️{s["intraday_risk_reason"]}' if risk and s.get('intraday_risk_reason') else ''
+
+            lines.append(f'TOP{i+1} {s.get("name","?")} {s.get("code","?")} {arrow} 信号{sig} {level}{risk_str}')
+            lines.append(f'  价格 {s.get("price",0)}元 日内 {chg:+.2f}% 总市值{_fmt_mv(s.get("总市值",0))}')
+
+            rsi = s.get('rsi', 0)
+            vr = s.get('volume_ratio', 0)
+            mom = s.get('momentum_5d', 0)
+            adx = s.get('adx', 0)
+            bb = s.get('bb_position', 0)
+            bb_cn = _fmt_bb(bb) if bb else ''
+            extra = ''
+            if adx: extra += f' ADX {adx:.1f}'
+            if bb_cn: extra += f' {bb_cn}'
+            lines.append(f'  指标 RSI {rsi:.1f} 量比 {vr:.2f} 5日动量 {mom:+.1f}%{extra}')
+
+            k, j = s.get('kdj_k'), s.get('kdj_j')
+            mc = s.get('macd_hist', 0)
+            if k: lines.append(f'  KDJ K{k:.1f} J{j:.1f} MACD柱{mc:+.4f}')
+
+            cz = s.get('coint_z')
+            if cz and abs(cz) > 1.5: lines.append(f'  协整Z {cz:.2f}（统计套利偏离）')
+
+            reason = s.get('priority_reason', '')
+            if reason: lines.append(f'  逻辑 {reason}')
+
+            scores = s.get('strategy_scores', {})
+            if scores:
+                tops = [f'{k}{v}分' for k,v in sorted([x for x in scores.items() if x[1]>=8], key=lambda x:x[1], reverse=True)[:4]]
+                if tops: lines.append(f'  策略 {" / ".join(tops)}')
+
+            ai = s.get('ai_summary', '')
+            if ai: lines.append(f'  AI {ai[:80]}')
+
+            kp = s.get('kelly_pct', 0)
+            if kp > 0: lines.append(f'  仓位 Kelly {kp:.0f}%')
+            # 止盈止损（不写手数，用户自己按资金量算）
+            stop_profit = 4 if sig >= 80 else 3
+            stop_loss = 2
+            lines.append(f'  止盈 {stop_profit}% 止损 {stop_loss}%（ATR动态调整）')
+            lines.append('')
+
+    # 持仓跟踪
+    try:
+        from config import load_json, POSITION_FILE
+        pos = load_json(POSITION_FILE, [])
+        if pos:
+            lines.append('持仓跟踪：')
+            pool = None
+            for p in pos[:5]:
+                code = p.get('code','')
+                name = p.get('name','')
+                bp = p.get('buy_price',0)
+                bd = p.get('buy_date','')
+                bs = p.get('buy_signal',0)
+                cp = 0
+                try:
+                    if pool is None:
+                        from data import _get_pool_snapshot
+                        pool = _get_pool_snapshot()
+                    row = pool[pool['代码']==code] if pool is not None and len(pool) > 0 else None
+                    if row is not None and len(row) > 0:
+                        cp = float(row['最新价'].values[0])
+                except: pass
+                if cp > 0 and bp > 0:
+                    pnl = (cp - bp) / bp * 100
+                    hold = ''
+                    try:
+                        d = (dt.date.today() - dt.datetime.strptime(bd, '%Y-%m-%d').date()).days
+                        hold = f'T+{d}'
+                    except: pass
+                    tag = '高分' if bs >= 80 else ''
+                    lines.append(f'  {code} {name} {hold} {pnl:+.1f}% {tag}')
+            lines.append('')
+    except: pass
+
+    lines.append('明日计划：')
+    lines.append('  09:25竞价观察 高开3%以上分批止盈 低开2%触发止损')
+    lines.append('  持仓按T+1/T+2动态执行 高分票（信号>80）多持一天')
+    lines.append('')
+    lines.append('⚠️ 量化信号仅供参考 不构成投资建议 单票仓位不超过20%')
+    lines.append(f'🔗 加入星球看完整内容：https://t.zsxq.com/mHlDz')
+
+    text = '\n'.join(lines)
+    os.makedirs('data', exist_ok=True)
+    with open(PLANET_POST_FILE, 'w', encoding='utf-8') as f:
+        f.write(text)
+    try:
+        with open(PLANET_POST_LOG, 'a', encoding='utf-8') as f:
+            f.write(f'\n{"="*40}\n{today}\n{"="*40}\n{text}\n')
+    except: pass
+    print(f'[Planet] 已写入 {PLANET_POST_FILE}')
+    return text
+
+def _fmt_mv(mv):
+    """格式化市值"""
+    try:
+        v = float(mv)
+        if v >= 1e10: return f'{v/1e8:.0f}亿'
+        if v >= 1e8: return f'{v/1e8:.1f}亿'
+        return f'{v/1e4:.0f}万'
+    except: return str(mv)
+
+def _fmt_bb(pos):
+    """布林带位置转中文"""
+    if pos >= 1.0: return '布林上轨外'
+    if pos >= 0.85: return '布林上轨附近'
+    if pos >= 0.65: return '布林上轨偏下'
+    if pos >= 0.45: return '布林中轨'
+    if pos >= 0.25: return '布林中轨偏下'
+    if pos >= 0.1: return '布林下轨附近'
+    return '布林下轨外'
+
 # 通用API缓存（减少akshare重复调用）
 _API_CACHE = {}
 
@@ -298,10 +476,26 @@ def analyze():
     def _bg_scan():
         global _scan_running, _SCAN_CACHE
         _scan_running = True
+        # Watchdog: auto-reset after 180s
+        def _watchdog():
+            global _scan_running
+            time.sleep(180)
+            if _scan_running:
+                _scan_running = False
+                print("[watchdog] scan timeout 180s, auto reset")
+        threading.Thread(target=_watchdog, daemon=True).start()
         try:
             _set_progress(0, '权重更新', '更新因子权重...')
             try: update_weights_internal()
             except: pass
+
+            _set_progress(3, '协整', '发现协整配对...')
+            try:
+                from cointegration import load_coint_pairs
+                cp = load_coint_pairs()
+                print(f"[扫描] 协整配对: {len(cp)}个")
+            except Exception as e:
+                print(f"[扫描] 协整发现失败: {e}")
 
             _set_progress(5, '股票池', '获取全市场股票池...')
             pool = _get_pool_snapshot()
@@ -310,12 +504,24 @@ def analyze():
             pool = pool[~pool['名称'].str.contains('ST|退')]
             pool = pool[pool['总市值'] > 50e8]
             pool = pool[pool['最新价'] > 3]
+            # 按资金量过滤买得起的股票（80%资金能买1手）
+            from config import ACCOUNT_CAPITAL
+            max_price = ACCOUNT_CAPITAL * 0.8 / 100
+            pool = pool[pool['最新价'] <= max_price]
             pool = pool[pool['涨跌幅'].abs() < 9.5]
+            # 量比过滤（仅当字段存在时）
+            if '量比' in pool.columns:
+                pool = pool[pool['量比'] > 0.8]  # 分析显示83%冲高股前日量比<1.5，>1.5过滤太严
+            if '换手率' in pool.columns:
+                pool = pool[(pool['换手率'] >= 5) & (pool['换手率'] <= 10)]
+            elif 'turnoverratio' in pool.columns:
+                pool = pool[(pool['turnoverratio'] >= 5) & (pool['turnoverratio'] <= 10)]
+            else:
+                print("[扫描] 无换手率字段，换手率过滤被跳过")
 
             pool['abs_chg'] = pool['涨跌幅'].abs()
-            pool['score_chg'] = pool['abs_chg'].apply(lambda x: 10 if 1 < x < 7 else (5 if 0.3 < x <= 1 else 1))
-            pool = pool.sort_values('score_chg', ascending=False)
-            codes = pool.head(80)['代码'].tolist()
+            pool = pool.sort_values('abs_chg', ascending=False)
+            codes = pool.head(300)['代码'].tolist()
 
             from concurrent.futures import ThreadPoolExecutor as TPE
             # Step 1: 快速预筛（仅SQLite缓存，不调akshare基本面）
@@ -339,6 +545,8 @@ def analyze():
                             if len(row) > 0:
                                 r = row.iloc[0]
                                 res['name'] = r['名称']; res['price'] = r['最新价']; res['change_pct'] = r['涨跌幅']
+                                res['昨收'] = r.get('昨收', 0); res['今日最高'] = r.get('今日最高', 0); res['今日最低'] = r.get('今日最低', 0)
+                                res['总市值'] = r.get('总市值', 0)
                                 candidates.append(res)
                     except Exception:
                         pass
@@ -368,16 +576,140 @@ def analyze():
                         ai_result = ai_committee_decision(stock_data, ai_news, positions_cache)
                         candidate['ai_decision'] = ai_result.get('decision', 'PASS')
                         candidate['ai_summary'] = ai_result.get('summary', '')
-                        if ai_result.get('decision') == 'BUY':
-                            candidate['signal'] = min(100, candidate['signal'] + 10)
                     except Exception:
                         pass
 
             _set_progress(95, 'AI分析', 'AI决策完成，整理结果...')
+            # 日内涨幅调整：仅对上涨有效，3-5%加分，>7%扣分
+            for c in candidates:
+                chg = c.get('change_pct', 0)
+                if chg < 0:
+                    c['signal'] = int(c['signal'] * 0.85)  # 下跌扣分
+                elif chg < 3:
+                    c['signal'] = int(c['signal'] * 0.90)
+                elif chg <= 5:
+                    c['signal'] = min(100, int(c['signal'] * 1.15))
+                elif chg <= 7:
+                    pass
+                else:
+                    c['signal'] = int(c['signal'] * 0.70)
+            # 分时危险形态检测（炸板、高开低走、弱势收盘、放量滞涨）
+            for c in candidates:
+                yc = c.get('昨收', 0)
+                dh = c.get('今日最高', 0)
+                dl = c.get('今日最低', 0)
+                pr = c.get('price', 0)
+                chg = c.get('change_pct', 0)
+                vr = c.get('volume_ratio', 1)
+                max_chg = (dh - yc) / yc * 100 if yc and dh > 0 else 0
+                pullback = max_chg - chg if max_chg > 0 else 0
+                # 日内位置：(现价-最低)/(最高-最低)，0=最低点 100=最高点
+                pos = (pr - dl) / (dh - dl) * 100 if dh > dl and dh > 0 else 50
+                reasons = []
+                if max_chg >= 9.0 and pullback >= 3:
+                    c['signal'] = int(c['signal'] * 0.55)
+                    reasons.append('炸板')
+                elif max_chg >= 9.0 and pullback >= 1.5:
+                    c['signal'] = int(c['signal'] * 0.75)
+                    reasons.append('冲高回落')
+                elif max_chg >= 8.0 and pullback >= 2:
+                    c['signal'] = int(c['signal'] * 0.85)
+                    reasons.append('明显回落')
+                if chg > 0 and pos < 25 and max_chg >= 1.5:
+                    c['signal'] = int(c['signal'] * 0.70)
+                    reasons.append('高开低走')
+                if pos < 15 and chg < 2:
+                    c['signal'] = int(c['signal'] * 0.80)
+                    reasons.append('弱势收盘')
+                if vr > 2.0 and chg < 1:
+                    c['signal'] = int(c['signal'] * 0.80)
+                    reasons.append('放量滞涨')
+                c['intraday_risk'] = True if reasons else False
+                c['intraday_risk_reason'] = ';'.join(reasons) if reasons else ''
+                # AL Brooks 背景上下文警告
+                b = c.get('brooks', {})
+                if b.get('context') == 'trading_range' and c.get('signal', 0) > 70:
+                    c['intraday_risk'] = True
+                    c['intraday_risk_reason'] = (c.get('intraday_risk_reason', '') + ';震荡背景·突破信号降权').strip(';')
+                    c['signal'] = int(c['signal'] * 0.90)
+            # 凯利公式仓位 + 协整信息
+            for c in candidates:
+                try:
+                    from kelly import calc_kelly_position
+                    k = calc_kelly_position(c['code'], c['price'], c['signal'])
+                    c['kelly_pct'] = k['kelly_pct']
+                    c['kelly_shares'] = k['suggested_shares']
+                    c['position_advice'] = f"Kelly{k['kelly_pct']}% ({k['suggested_shares']}手)"
+                except:
+                    pass
+                try:
+                    from cointegration import get_cointegration_score
+                    _, z, det = get_cointegration_score(c['code'])
+                    if z is not None:
+                        c['coint_z'] = z
+                    if det:
+                        c['coint_pair'] = det.get('pair_code', '')
+                except:
+                    pass
             candidates.sort(key=lambda x: x['signal'], reverse=True)
             _set_progress(100, '完成', '扫描完成')
             _SCAN_CACHE['time'] = time.time()
             _SCAN_CACHE['data'] = {'status': 'ok', 'stocks': candidates[:15], 'total': len(candidates)}
+            # 持久化扫描结果
+            try:
+                from config import SIGNALS_LOG_FILE, save_json
+                signals_log = load_json(SIGNALS_LOG_FILE, [])
+                signals_log.append({
+                    'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'date': datetime.date.today().strftime('%Y-%m-%d'),
+                    'stocks': candidates[:15]
+                })
+                if len(signals_log) > 90:
+                    signals_log = signals_log[-60:]
+                save_json(signals_log, SIGNALS_LOG_FILE)
+            except Exception:
+                pass
+
+            # Ruflo: store TOP5 to memory
+            try:
+                from mcp_client import safe_store
+                for c in candidates[:5]:
+                    safe_store(
+                        f"Stock {c['code']}: sig={c['signal']}, rsi={c.get('rsi',0)}, "
+                        f"vr={c.get('volume_ratio',0)}, mom={c.get('momentum_5d',0)}",
+                        {'code': c['code'], 'signal': c['signal'], 'price': c.get('price',0),
+                         'rsi': c.get('rsi',0), 'date': str(datetime.date.today()),
+                         'name': c.get('name','')}
+                    )
+                print(f'[Ruflo] Stored {min(5,len(candidates))} patterns')
+            except Exception as e:
+                print(f'[Ruflo] Store error: {e}')
+
+            # 生成星球发帖文本（供Hermes推送微信）
+            try:
+                _save_planet_post(candidates[:5])
+            except Exception as e:
+                print(f'[Planet] 发帖生成失败: {e}')
+
+            # 自动交易: 扫描完成后自动买入TOP1
+            if candidates and _AUTO_TRADE_ENABLED:
+                try:
+                    top = candidates[0]
+                    import subprocess
+                    code = top['code']; price = top['price']
+                    from kelly import calc_kelly_position
+                    k = calc_kelly_position(code, price, min(round(top['signal']), 100))
+                    shares = k['suggested_shares']
+                    print(f'[自动交易] 买入 {top["name"]}({code}) {price}×{shares}')
+                    result = subprocess.run(
+                        [sys.executable, '-c',
+                         f'from trader import PulseTrader; t=PulseTrader(); t.connect(); t.buy("{code}",{price},{shares})'],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    print(f'[自动交易] 结果: {result.stdout[:100] if result.stdout else "ok"}')
+                except Exception as ate:
+                    print(f'[自动交易] 失败: {ate}')
+
         except Exception as e:
             _SCAN_CACHE['data'] = {'status': 'error', 'message': f'扫描异常: {str(e)[:80]}', 'stocks': [], 'total': 0}
         finally:
@@ -385,6 +717,18 @@ def analyze():
 
     threading.Thread(target=_bg_scan, daemon=True).start()
     return jsonify({'status': 'scanning', 'message': '扫描已启动，预计60-90秒完成，请稍后查看...'})
+
+
+@app.route('/api/auto_trade', methods=['GET', 'POST'])
+def auto_trade():
+    """自动交易开关"""
+    global _AUTO_TRADE_ENABLED
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        _AUTO_TRADE_ENABLED = data.get('enabled', False)
+        print(f'[自动交易] 开关: {_AUTO_TRADE_ENABLED}')
+        return jsonify({'auto_trade': _AUTO_TRADE_ENABLED})
+    return jsonify({'auto_trade': _AUTO_TRADE_ENABLED})
 
 
 @app.route('/api/scan_status', methods=['GET'])
@@ -401,9 +745,12 @@ def scan_status():
 
 @app.route('/api/sell_check', methods=['POST'])
 def sell_check():
+    """卖出检查：支持多日持有策略（T+1观察，T+2强制卖出）"""
     data = request.get_json()
     code = data.get('code','').strip()
     buy_price = float(data.get('buy_price',0))
+    buy_date_str = data.get('buy_date', '')  # 可选，用于多日策略
+    buy_signal = data.get('buy_signal', 0)  # 买入时的评分，用于信号衰减对比
     if not code: return jsonify({'error':'缺少代码'}),400
     try:
         cp = chg = name = None
@@ -435,8 +782,19 @@ def sell_check():
         ma5 = closes.rolling(5).mean().iloc[-1]
         ma20 = closes.rolling(20).mean().iloc[-1]
         vol_ratio = float(df['volume'].iloc[-1] / df['volume'].rolling(20).mean().iloc[-1]) if len(df) >= 20 else 1.0
+        # ATR动态止损
+        try:
+            from engine import ArrayManager
+            am = ArrayManager(60)
+            for i in range(len(closes)):
+                am.update_bar(df['open'].iloc[i], df['high'].iloc[i], df['low'].iloc[i], df['close'].iloc[i], df['volume'].iloc[i])
+            atr_val = am.atr(14)
+            atr_pct = atr_val / cp if cp > 0 else 0
+            atr_stop = max(atr_pct * 2, 0.02)
+        except:
+            atr_stop = 0.03
 
-        # Composite signal (周末降级：跳过全量扫描)
+        # Composite signal
         try:
             composite = calculate_comprehensive_score(code)
             current_signal = composite['signal'] if composite else 50
@@ -444,36 +802,110 @@ def sell_check():
             current_signal = 50
 
         should_sell = False; reasons = []; level = 'hold'
+        holding_days = 99
 
-        if profit_pct >= 5:
-            should_sell = True; level = 'strong_sell'
-            reasons.append(f'盈利{profit_pct:.1f}%触发强制止盈线(+5%)')
-        elif profit_pct >= 3:
-            should_sell = True; level = 'sell'
-            reasons.append(f'盈利{profit_pct:.1f}%触发止盈线(+3%)')
-        elif profit_pct >= 1.5 and rsi > 70:
-            should_sell = True; level = 'sell'
-            reasons.append(f'盈利{profit_pct:.1f}%且RSI={rsi:.0f}超买')
-        elif profit_pct <= -2:
-            should_sell = True; level = 'strong_sell'
-            reasons.append(f'亏损{profit_pct:.1f}%触发止损线(-2%)')
-        elif rsi > 80:
-            should_sell = True; level = 'sell'
-            reasons.append(f'RSI={rsi:.0f}严重超买')
-        elif rsi > 70 and macd_hist < 0:
-            should_sell = True; level = 'sell'
-            reasons.append(f'RSI={rsi:.0f}超买且MACD死叉')
-        elif current_signal < 30:
-            should_sell = True; level = 'sell'
-            reasons.append(f'综合评分降至{current_signal}，信号失效')
-        elif adx_val and adx_val > 30 and plus_di < minus_di:
-            should_sell = True; level = 'sell'
-            reasons.append(f'ADX={adx_val:.0f}趋势转空')
-        elif ma5 < ma20 and profit_pct < 0:
-            should_sell = True; level = 'sell'
-            reasons.append('均线死叉且持仓亏损')
+        # === 多日持有策略（T+1观察，T+2强制卖出）===
+        if buy_date_str:
+            try:
+                bd = datetime.datetime.strptime(buy_date_str, '%Y-%m-%d').date()
+                today = datetime.date.today()
+                holding_days = (today - bd).days
+            except:
+                holding_days = 99
 
-        if not should_sell:
+        if buy_date_str and holding_days < 99:
+            if holding_days >= 2:
+                # T+2+：按信号强度决定持有上限
+                if buy_signal >= 80 and profit_pct >= -1:
+                    # 高分信号：允许持有到T+3
+                    if holding_days >= 3:
+                        should_sell = True; level = 'strong_sell'
+                        reasons.append(f'T+{holding_days}高分信号持有上限，强制卖出(盈利{profit_pct:.1f}%)')
+                    else:
+                        reasons.append(f'T+2高分信号持续有效，明日09:26强制卖出(盈利{profit_pct:.1f}%)')
+                else:
+                    should_sell = True; level = 'strong_sell'
+                    reasons.append(f'T+{holding_days}强制卖出(盈利{profit_pct:.1f}%)')
+            elif holding_days == 1:
+                # T+1 有条件持有
+                now_h = datetime.datetime.now().hour
+                if profit_pct >= 2.5:
+                    if buy_signal >= 80 and profit_pct < 4:
+                        # 高分信号：提高止盈线到4%
+                        pass
+                    else:
+                        should_sell = True; level = 'strong_sell'
+                        reasons.append(f'T+1盈利{profit_pct:.1f}%触发止盈线(+2.5%)')
+                elif profit_pct <= -atr_stop*100:
+                    should_sell = True; level = 'strong_sell'
+                    reasons.append(f'T+1亏损{profit_pct:.1f}%触发ATR动态止损({atr_stop:.1%})')
+                elif rsi > 80 and profit_pct > 0:
+                    should_sell = True; level = 'sell'
+                    reasons.append(f'T+1 RSI={rsi:.0f}超买，建议止盈')
+                # T+1信号衰减检查：买入评分对比当前评分
+                elif buy_signal > 10 and current_signal < buy_signal * 0.6:
+                    if buy_signal >= 80:
+                        # 高分信号：信号衰减容忍度高，降级不强制卖
+                        reasons.append(f'评分从{buy_signal}跌至{current_signal}，高分信号观察中')
+                    else:
+                        should_sell = True;
+                        decay = (buy_signal - current_signal) / buy_signal
+                        level = 'strong_sell' if now_h >= 14 else 'sell'
+                        reasons.append(f'评分从{buy_signal}跌至{current_signal}(-{decay:.0%})，信号失效')
+                elif now_h >= 14 and now_h < 15:
+                    # T+1尾盘：亏损>2%止损，否则持有到T+2
+                    if profit_pct <= -atr_stop*100:
+                        should_sell = True; level = 'strong_sell'
+                        reasons.append(f'T+1尾盘亏损{profit_pct:.1f}%，ATR止损({atr_stop:.1%})')
+                    else:
+                        reasons.append(f'T+1尾盘信号正常，明日09:26强制卖出')
+                else:
+                    # T+1早盘：观察中
+                    reasons.append(f'T+1观察中 RSI={rsi:.0f} 明日09:26强制卖出')
+            else:
+                # T+0 刚买入
+                reasons.append(f'今日刚买入 {name}，明日开盘后观察')
+        else:
+            # === 传统单日策略（无buy_date时回退）===
+            if profit_pct >= 5:
+                should_sell = True; level = 'strong_sell'
+                reasons.append(f'盈利{profit_pct:.1f}%触发强制止盈线(+5%)')
+            elif profit_pct >= 3:
+                should_sell = True; level = 'sell'
+                reasons.append(f'盈利{profit_pct:.1f}%触发止盈线(+3%)')
+            elif profit_pct >= 1.5 and rsi > 70:
+                should_sell = True; level = 'sell'
+                reasons.append(f'盈利{profit_pct:.1f}%且RSI={rsi:.0f}超买')
+            elif profit_pct <= -atr_stop*100:
+                should_sell = True; level = 'strong_sell'
+                reasons.append(f'亏损{profit_pct:.1f}%触发ATR止损({atr_stop:.1%})')
+            elif rsi > 80:
+                should_sell = True; level = 'sell'
+                reasons.append(f'RSI={rsi:.0f}严重超买')
+            elif rsi > 70 and macd_hist < 0:
+                should_sell = True; level = 'sell'
+                reasons.append(f'RSI={rsi:.0f}超买且MACD死叉')
+            elif current_signal < 30:
+                should_sell = True; level = 'sell'
+                reasons.append(f'综合评分降至{current_signal}，信号失效')
+            elif adx_val and adx_val > 30 and plus_di < minus_di:
+                should_sell = True; level = 'sell'
+                reasons.append(f'ADX={adx_val:.0f}趋势转空')
+            # 均线死叉卖出 (从abu移植)
+            if ma5 < ma20 and profit_pct < 0:
+                should_sell = True; level = 'sell'
+                reasons.append('均线死叉且持仓亏损')
+            # 浮盈回撤保护: 从持仓最高点回撤超过1.5倍ATR
+            if profit_pct > 3 and atr_pct > 0:
+                pullback = profit_pct - (cp - buy_price * 1.01) / buy_price * 100
+                if pullback > atr_pct * 150:
+                    should_sell = True; level = 'sell'
+                    reasons.append(f'浮盈回撤{pullback:.1f}%超过ATR阈值,止盈')
+            elif ma5 < ma20 and profit_pct < 0:
+                should_sell = True; level = 'sell'
+                reasons.append('均线死叉且持仓亏损')
+
+        if not should_sell and not reasons:
             reasons.append(f'RSI={rsi:.0f} | 信号={current_signal} | 评分正常，可持有')
 
         return jsonify({
@@ -484,7 +916,7 @@ def sell_check():
             'adx': round(adx_val, 1) if adx_val else 0,
             'signal': current_signal, 'vol_ratio': round(vol_ratio, 2),
             'should_sell': should_sell, 'level': level,
-            'reasons': reasons,
+            'reasons': reasons, 'holding_days': holding_days,
             'advice': '🔴 建议卖出' if level == 'strong_sell' else ('🟡 考虑卖出' if should_sell else '🟢 建议持有')
         })
     except Exception as e:
@@ -493,13 +925,22 @@ def sell_check():
 @app.route('/api/position/buy', methods=['POST'])
 def buy():
     data = request.get_json(); code=data.get('code','').strip(); price=float(data.get('price',0))
+    shares = int(data.get('shares', 0))  # 0=自动凯利计算
     if not code or price<=0: return jsonify({'error':'参数错误'}),400
+    if shares < 1:
+        try:
+            from kelly import calc_kelly_position
+            k = calc_kelly_position(code, price, data.get('signal', 50))
+            shares = k['suggested_shares']
+        except:
+            shares = 1
     pos = load_positions()
     if any(p['code']==code for p in pos): return jsonify({'error':'已持有'}),400
-    pos.append({'code':code,'buy_price':price,'buy_time':datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),'shares':100})
+    now = datetime.datetime.now()
+    pos.append({'code':code,'buy_price':price,'buy_time':now.strftime('%Y-%m-%d %H:%M'),'buy_date':now.strftime('%Y-%m-%d'),'shares':shares,'buy_signal':data.get('signal',0)})
     save_positions(pos)
     _API_CACHE.pop('stats', None)
-    return jsonify({'ok':True})
+    return jsonify({'ok':True, 'shares':shares})
 
 @app.route('/api/position/sell', methods=['POST'])
 def sell():
@@ -530,6 +971,29 @@ def delete_position(code):
     save_positions(pos)
     _API_CACHE.pop('stats', None)
     return jsonify({'ok':True})
+
+@app.route('/api/sell_strategy', methods=['GET'])
+def sell_strategy_all():
+    """批量生成所有持仓的买卖策略建议（供09:26推送调用）"""
+    from config import load_json
+    pos = load_json('data/positions.json', [])
+    results = []
+    now_h = datetime.datetime.now().hour
+    for p in pos:
+        try:
+            url = f"http://127.0.0.1:5001/api/sell_check"
+            import requests
+            resp = requests.post(url, json={
+                'code': p['code'], 'buy_price': p['buy_price'],
+                'buy_date': p.get('buy_date', p.get('buy_time', '')[:10]),
+                'buy_signal': p.get('buy_signal', 0)
+            }, timeout=15)
+            r = resp.json()
+            r['shares'] = p.get('shares', 1)
+            results.append(r)
+        except Exception as e:
+            results.append({'code': p['code'], 'error': str(e)})
+    return jsonify({'positions': results, 'hour': now_h, 'count': len(results)})
 
 @app.route('/api/stats', methods=['GET'])
 def stats_route():
@@ -1575,6 +2039,132 @@ def refresh_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+
+# ========== Ruflo API ==========
+
+@app.route('/api/ruflo/status', methods=['GET'])
+def ruflo_status():
+    try:
+        from mcp_client import check_status
+        return jsonify(check_status())
+    except Exception:
+        return jsonify({'available': False})
+
+@app.route('/api/ruflo/analyze', methods=['POST'])
+def ruflo_analyze():
+    try:
+        from mcp_client import check_status, agent_spawn
+        st = check_status()
+        if not st.get('available'):
+            return jsonify(st)
+        data = request.get_json() or {}
+        code = data.get('code', '')
+        if not code:
+            return jsonify({'error': 'no code'}), 400
+        df = get_stock_daily_cached(code, 60)
+        if df is None or len(df) < 20:
+            return jsonify({'error': 'no data'}), 404
+        info = {'code': code, 'close': [round(x,2) for x in df['close'].tolist()[-20:]]}
+        result = agent_spawn('quant', f'Analyze {json.dumps(info)}')
+        return jsonify({'result': result, 'available': True})
+    except Exception as e:
+        return jsonify({'available': False, 'error': str(e)})
+
+@app.route('/api/ruflo/memory/store', methods=['POST'])
+def ruflo_memory_store():
+    try:
+        from mcp_client import safe_store
+        data = request.get_json() or {}
+        text = data.get('text', '')
+        if not text:
+            return jsonify({'error': 'no text'}), 400
+        meta = data.get('metadata', {})
+        meta['timestamp'] = datetime.datetime.now().isoformat()
+        result = safe_store(text, meta)
+        return jsonify({'result': result, 'available': True})
+    except Exception as e:
+        return jsonify({'available': False, 'error': str(e)})
+
+@app.route('/api/ruflo/memory/search', methods=['POST'])
+def ruflo_memory_search():
+    try:
+        from mcp_client import safe_search
+        data = request.get_json() or {}
+        query = data.get('query', '')
+        top_k = data.get('top_k', 5)
+        if not query:
+            return jsonify({'error': 'no query'}), 400
+        result = safe_search(query, top_k)
+        return jsonify({'result': result, 'available': True})
+    except Exception as e:
+        return jsonify({'available': False, 'error': str(e)})
+
+@app.route('/api/ruflo/committee', methods=['POST'])
+def ruflo_committee():
+    try:
+        from mcp_client import check_status, swarm_init
+        st = check_status()
+        if not st.get('available'):
+            return jsonify(st)
+        data = request.get_json() or {}
+        stocks = data.get('stocks', [])
+        market = data.get('market', {})
+        if not stocks:
+            return jsonify({'error': 'no stocks'}), 400
+        result = swarm_init(
+            ['quant_1','quant_2','quant_3'],
+            f'Eval: {json.dumps(stocks, ensure_ascii=False)}',
+            json.dumps(market, ensure_ascii=False)
+        )
+        return jsonify({'result': result, 'available': True})
+    except Exception as e:
+        return jsonify({'available': False, 'error': str(e)})
+
+# ==================== HTTP部署接口 ====================
+
+@app.route('/api/deploy', methods=['POST'])
+def deploy_api():
+    """HTTP部署：接收engine.py上传 → 写文件 → 重启Gunicorn
+    用法: curl -X POST -H "X-Deploy-Token: po2024" -F "file=@engine.py" http://host/api/deploy
+    """
+    token = request.headers.get('X-Deploy-Token', '')
+    if token != DEPLOY_TOKEN:
+        return jsonify({'error': '令牌错误'}), 403
+
+    if 'file' not in request.files:
+        return jsonify({'error': '缺少file字段'}), 400
+
+    f = request.files['file']
+    if f.filename != 'engine.py':
+        return jsonify({'error': '只接受engine.py'}), 400
+
+    # 写入服务器
+    deploy_path = '/opt/quant_pulse/engine.py'
+    try:
+        f.save(deploy_path)
+    except Exception as e:
+        return jsonify({'error': f'写入失败: {e}'}), 500
+
+    # 重启服务
+    try:
+        import subprocess
+        r = subprocess.run(
+            ['systemctl', 'restart', 'quant_pulse'],
+            capture_output=True, text=True, timeout=15
+        )
+        return jsonify({
+            'ok': True,
+            'message': 'engine.py已更新，服务已重启',
+            'stdout': r.stdout[-200:] if r.stdout else '',
+            'stderr': r.stderr[-200:] if r.stderr else ''
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({'ok': True, 'message': '文件已写入，重启命令已发送（超时）'})
+    except FileNotFoundError:
+        return jsonify({'ok': True, 'message': '文件已写入（非systemd环境，请手动重启）'})
+    except Exception as e:
+        return jsonify({'error': f'重启失败: {e}'}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))

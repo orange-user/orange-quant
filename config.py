@@ -13,6 +13,8 @@ BLACKLIST_FILE = os.path.join(DATA_DIR, 'blacklist.json')
 FACTOR_STATS_FILE = os.path.join(DATA_DIR, 'factor_stats.json')
 BACKTEST_FILE = os.path.join(DATA_DIR, 'backtest_results.json')
 SIGNALS_LOG_FILE = os.path.join(DATA_DIR, 'signals_log.json')
+ACCOUNT_CAPITAL = 100000.0  # 账户总资金(元)，影响凯利公式仓位计算
+DEPLOY_TOKEN = 'po2024'  # HTTP部署接口的简单鉴权令牌
 FACTOR_REGISTRY_FILE = os.path.join(DATA_DIR, 'factor_registry.json')
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -116,6 +118,11 @@ FACTOR_REGISTRY = {
     "volume_breakout": {"category": "量价", "field": None, "description": "放量突破信号", "formula": "volume/volume.rolling(20).mean()", "weight": 1.0, "ic_30d": 0, "active": True},
     "consecutive_yang":{"category": "量价", "field": None, "description": "连阳天数", "formula": "count(close>open)", "weight": 1.0, "ic_30d": 0, "active": True},
     "ma_convergence":  {"category": "量价", "field": None, "description": "均线粘合度", "formula": "1-std(ma5,ma10,ma20)/mean(ma5,ma10,ma20)", "weight": 1.0, "ic_30d": 0, "active": True},
+    # ===== 统计套利因子 =====
+    "cointegration":   {"category": "统计套利", "field": None, "description": "协整配对均值回归", "formula": None, "weight": 1.2, "ic_30d": 0, "active": True},
+    # ===== AL Brooks 价格行为因子 =====
+    "three_push":      {"category": "量价", "field": None, "description": "三推反转·Brooks衰竭", "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
+    "climax":          {"category": "量价", "field": None, "description": "趋势高潮·Brooks力竭", "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
 }
 
 DYNAMIC_FACTORS = {}
