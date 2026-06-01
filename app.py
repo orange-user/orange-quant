@@ -2131,8 +2131,9 @@ def ruflo_committee():
 
 @app.route('/api/deploy', methods=['POST'])
 def deploy_api():
-    """HTTP部署：接收engine.py上传 → 写文件 → 重启Gunicorn
+    """HTTP部署：接收.py文件上传 → 写文件 → 重启Gunicorn
     用法: curl -X POST -H "X-Deploy-Token: po2024" -F "file=@engine.py" http://host/api/deploy
+          curl -X POST -H "X-Deploy-Token: po2024" -F "file=@app.py" http://host/api/deploy
     """
     token = request.headers.get('X-Deploy-Token', '')
     if token != DEPLOY_TOKEN:
@@ -2142,17 +2143,17 @@ def deploy_api():
         return jsonify({'error': '缺少file字段'}), 400
 
     f = request.files['file']
-    if f.filename != 'engine.py':
-        return jsonify({'error': '只接受engine.py'}), 400
+    filename = f.filename or ''
+    allowed = ['engine.py', 'app.py', 'config.py']
+    if filename not in allowed:
+        return jsonify({'error': f'只接受{allowed}'}), 400
 
-    # 写入服务器
-    deploy_path = '/opt/quant_pulse/engine.py'
+    deploy_path = f'/opt/quant_pulse/{filename}'
     try:
         f.save(deploy_path)
     except Exception as e:
         return jsonify({'error': f'写入失败: {e}'}), 500
 
-    # 重启服务
     try:
         import subprocess
         r = subprocess.run(
