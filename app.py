@@ -18,6 +18,12 @@ from matplotlib.patches import Rectangle, FancyBboxPatch
 warnings.filterwarnings('ignore')
 
 from config import *
+
+# DEPLOY_TOKEN可能不存在于旧版config.py，设后备值
+try:
+    DEPLOY_TOKEN
+except NameError:
+    DEPLOY_TOKEN = 'po2024'
 from data import *
 from data import _get_pool_snapshot
 from engine import *
