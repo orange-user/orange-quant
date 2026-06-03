@@ -153,6 +153,29 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
     except Exception as e:
         logger.debug(f'wudao_kline({code}): {e}')
 
+    # Try Scrapling (fallback when 悟道 quota exhausted)
+    try:
+        from scraper import fetch_kline as scraper_kline
+        df = scraper_kline(code, days)
+        if df is not None and len(df) >= days * 0.8:
+            conn = sqlite3.connect(DB_PATH)
+            for _, row in df.iterrows():
+                try:
+                    conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                                 (code, str(row['date']), float(row['open']), float(row['close']),
+                                  float(row['high']), float(row['low']), float(row['volume'])))
+                except: pass
+            conn.commit()
+            conn.close()
+            df['returns'] = df['close'].pct_change()
+            df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+            df['ma5'] = df['close'].rolling(5).mean()
+            df['ma20'] = df['close'].rolling(20).mean()
+            logger.info(f'scraper_kline({code}): {len(df)}条')
+            return df[['date','open','close','high','low','volume','returns','volume_ratio','ma5','ma20']].dropna()
+    except Exception as e:
+        logger.debug(f'scraper_kline({code}): {e}')
+
     try:
         df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
         if df is None or len(df) < days:
