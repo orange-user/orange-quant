@@ -40,6 +40,7 @@ class Monitor:
         self.d1_cache = {}
         self.market_up = True  # 大盘过滤
         self._d2_qualified = set()  # 已通过15分K线确认的股票池
+        self._ma_cache = {}  # code -> {ma5, ma10, ma20, d2_avg_vol}
         self._load_positions()
 
     # ── 候选池 ──
@@ -96,6 +97,32 @@ class Monitor:
             POSITIONS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
         except Exception as e:
             log.error(f'持仓保存失败: {e}')
+
+    # ── MA缓存 ──
+
+    def _get_ma_data(self, code):
+        """获取均线和均量数据（缓存，只计算一次）"""
+        if code in self._ma_cache:
+            return self._ma_cache[code]
+        try:
+            from data import get_stock_daily_cached
+            df = get_stock_daily_cached(code, days=60)
+            if df is not None and len(df) >= 20:
+                closes = df['close'].values
+                vols = df['volume'].values
+                ma5 = float(closes[-5:].mean()) if len(closes) >= 5 else None
+                ma10 = float(closes[-10:].mean()) if len(closes) >= 10 else None
+                ma20 = float(closes[-20:].mean()) if len(closes) >= 20 else None
+                avg_vol_20 = float(vols[-20:].mean()) if len(vols) >= 20 else None
+                d1 = df.iloc[-2] if len(df) >= 2 else None
+                d1_vol = float(d1['volume']) if d1 is not None else None
+                data = {'ma5': ma5, 'ma10': ma10, 'ma20': ma20,
+                        'avg_vol_20': avg_vol_20, 'd1_vol': d1_vol}
+                self._ma_cache[code] = data
+                return data
+        except:
+            pass
+        return {}
 
     def _clean_sell_log(self):
         """卖出日志只保留最近MAX_SELL_LOG条"""
@@ -194,26 +221,29 @@ class Monitor:
             cur = quote['price']
             low = quote['low']
 
-            # 今日必须低开/平开（不能高开太多）
-            open_p = quote.get('open', cur)
-            if open_p > d1_close * 1.02:
-                return False, None  # 高开超2%不追
+            # 条件1: 从D1收盘回撤1%~8%
+            pullback = (d1_close - cur) / d1_close * 100
+            if pullback < 1.0 or pullback > 8:
+                return False, None
 
-            # 条件1: 今日最低价必须回踩到D1开盘价+2%以内
-            if low > d1_open * 1.03:
-                return False, None  # 最低都没回踩到位
+            # 条件2: 日内从最低点反弹确认
+            if cur < low * 1.003:
+                return False, None
 
-            # 条件2: 不能跌破D1开盘价太多（跌太多太弱，不是回踩）
-            if low < d1_open * 0.97:
-                return False, None  # 跌破D1开盘价3%以上，太弱
+            # 条件3: 均线支撑+量价过滤（基于特征分析结果）
+            ma = self._get_ma_data(code)
+            if ma.get('ma10') and cur < ma['ma10'] * 0.98:
+                return False, None  # 跌破MA10超2%=太弱，不买
+            if ma.get('ma20') and cur < ma['ma20']:
+                return False, None  # 在MA20下方=趋势走坏
 
-            # 条件3: 当前价必须在D1开盘价的2%以内（还没涨上去）
-            if cur > d1_open * 1.02:
-                return False, None  # 已经涨上去了，买点已过
+            # 量能过滤：今日量不能超过D1量的1.5倍（放量下跌不行）
+            if ma.get('d1_vol') and quote.get('volume', 0) > ma['d1_vol'] * 1.5:
+                return False, None  # 比D1还放量=出货
 
-            # 条件4: 已从最低点反弹（确认止跌）
-            if cur < low * 1.005:
-                return False, None  # 还没确认反弹
+            # 条件4: 大盘环境
+            if not self.market_up:
+                return False, None
 
             # 条件3: 15分钟K线底部确认（只做一次，通过后加入白名单）
             # 注：Sina API可能被限流(456错误)，如无法获取则跳过K线确认
