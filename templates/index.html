@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>橘子量化 · 量化超短线</title>
+  <title>Pulse Orange · 量化超短线</title>
   <meta name="theme-color" content="#FFFFFF">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -11,9 +11,14 @@
   <link rel="icon" href="/static/favicon.ico" type="image/x-icon" sizes="any">
   <link rel="apple-touch-icon" href="/static/favicon.png">
   <link rel="manifest" href="/static/manifest.json">
-  <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
-  <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
-  <link rel="stylesheet" href="/static/css/style.css?v=20260525">
+  <script>
+    // Service Worker 清理（如果有旧缓存，自动刷新）
+    (function(){ if('serviceWorker'in navigator){navigator.serviceWorker.getRegistrations().then(function(r){if(r.length){r.forEach(function(x){x.unregister()});navigator.serviceWorker.register('/static/sw.js').then(function(){location.href='/';})}})} })();
+  </script>
+  <script src="/static/js/lib/vue.global.prod.js"></script>
+  <script src="/static/js/lib/echarts.min.js"></script>
+  <script src="/static/js/lib/gsap.min.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css?v=20260531">
 </head>
 <body>
   <div id="app">
@@ -88,14 +93,6 @@
               </div>
             </div>
 
-            <!-- 小橘子狗窝卡片 -->
-            <div class="doghouse-card" @dblclick="togglePet" title="双击唤醒小橘子">
-              <div class="doghouse-card-inner">
-                <canvas width="108" height="64"></canvas>
-                <div class="doghouse-text">💤 双击唤醒小橘子</div>
-              </div>
-            </div>
-
           </div>
 
           <!-- Main scan area -->
@@ -106,6 +103,10 @@
                 <button class="btn btn-primary" @click="executeScan" :disabled="loading" style="font-size:14px;padding:10px 24px;">
                   [[ loading ? '扫描中...' : '🔍 开始扫描' ]]
                 </button>
+                <label class="ml-2 text-xs" style="cursor:pointer;color:var(--text2);">
+                  <input type="checkbox" v-model="autoTrade" @change="toggleAutoTrade" style="vertical-align:middle;">
+                  扫描后自动买入TOP1
+                </label>
                 <span class="text-xs ml-2" style="color:var(--text2);">
                   [[ status==='non_trading' ? '今日休市' : '' ]]
                   <span v-if="status==='ok' && total > 0">
@@ -133,6 +134,16 @@
             </div>
 
             <div v-if="message" class="alert alert-info mb-2">[[ message ]]</div>
+
+            <!-- 动作栏：复制TOP3 + 星球入口 -->
+            <div v-if="stocks.length && status==='ok'" class="flex gap-2 flex-wrap mb-2">
+              <button class="btn btn-sm" @click="copyTop3" style="background:var(--green);color:#fff;border:none;">
+                📋 复制TOP3到星球
+              </button>
+              <a href="https://t.zsxq.com/mHlDz" target="_blank" class="btn btn-sm" style="background:var(--amber);color:#000;border:none;text-decoration:none;">
+                🌐 加入知识星球
+              </a>
+            </div>
 
             <!-- Signal Distribution Chart -->
             <div v-if="stocks.length && status==='ok'" class="card mb-2">
@@ -162,6 +173,7 @@
                       <span class="text-sub">量比 <b>[[ s.volume_ratio ]]</b></span>
                       <span class="text-sub">5日动量 <b :class="s.momentum_5d>0?'price-up':'price-down'">[[ s.momentum_5d>0?'+':'' ]][[ s.momentum_5d ]]%</b></span>
                       <span class="text-sub" v-if="s.adx">ADX <b>[[ s.adx ]]</b></span>
+                      <span class="text-sub" v-if="s.coint_z" title="配对: '+s.coint_pair">协整Z <b :class="s.coint_z<-1.5?'price-up':s.coint_z>1.5?'price-down':''">[[ s.coint_z ]]</b></span>
                     </div>
                     <!-- Top strategy scores (only >= 8) -->
                     <div class="flex gap-1 flex-wrap" v-if="s.strategy_scores">
@@ -180,7 +192,7 @@
                   </div>
                   <!-- Signal score -->
                   <div class="text-center" style="min-width:90px;">
-                    <div class="font-mono" style="font-size:36px;font-weight:800;" :class="s.signal>=75?'price-up':s.signal>=55?'text-amber':'text-muted'">[[ s.signal ]]</div>
+                    <div class="font-mono signal-score" style="font-size:36px;font-weight:800;" :class="s.signal>=75?'price-up':s.signal>=55?'text-amber':'text-muted'">[[ s.signal ]]</div>
                     <div :class="['signal-badge', s.signal>=75?'signal-strong':s.signal>=65?'signal-buy':s.signal>=50?'signal-watch':'signal-weak']">
                       [[ s.signal>=75?'强烈买入':s.signal>=65?'建议买入':s.signal>=50?'观察':'弱信号' ]]
                     </div>
@@ -466,21 +478,18 @@
           </div>
           <div v-if="weightsResult" class="mt-2 text-xs text-sub">[[ JSON.stringify(weightsResult) ]]</div>
           <div v-if="dataQuality" class="mt-2 text-xs text-sub">状态: [[ dataQuality.status ]]</div>
+          <div v-if="wudaoStatus" class="mt-2 text-xs" :class="wudaoStatus.remaining < 10 ? 'text-danger' : 'text-sub'">
+            悟道: [[ wudaoStatus.used ]]/[[ wudaoStatus.limit ]] 剩余[[ wudaoStatus.remaining ]]次
+            <span v-if="wudaoStatus.remaining < 10" class="text-danger">⚠️ 即将用完</span>
+          </div>
           <div v-if="updateResult" class="mt-2 text-xs text-sub">[[ updateResult ]]</div>
         </div>
       </div>
     </main>
 
-    <!-- 小橘子浮动宠物（拖拽移动） -->
-    <div class="pet-float" v-show="!petSleeping" :class="{dragging: petDragging}"
-         :style="{left: petX + 'px', top: petY + 'px'}"
-         @mousedown="startDrag" @touchstart.prevent="startDrag">
-      <div class="pet-bubble">[[ petMessage ]]</div>
-      <canvas width="64" height="64" @click.stop="patHead"></canvas>
-    </div>
-
   </div>
 
-  <script src="/static/js/app.js?v=20260525"></script>
+  <script src="/static/js/app.js"></script>
 </body>
 </html>
+

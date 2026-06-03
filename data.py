@@ -79,17 +79,26 @@ def init_db():
     conn.close()
 
 
-def get_stock_daily_cached(code, days=60):
+def get_stock_daily_cached(code, days=60, force_refresh=False):
     conn = sqlite3.connect(DB_PATH)
     try:
-        df = pd.read_sql_query("SELECT * FROM daily_data WHERE code=? ORDER BY date DESC LIMIT ?", conn, params=(code, days))
-        if len(df) >= days:
-            df = df.sort_values('date')
-            df['returns'] = df['close'].pct_change()
-            df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
-            df['ma5'] = df['close'].rolling(5).mean()
-            df['ma20'] = df['close'].rolling(20).mean()
-            return df[['date','open','close','high','low','volume','returns','volume_ratio','ma5','ma20']].dropna()
+        if not force_refresh:
+            df = pd.read_sql_query("SELECT * FROM daily_data WHERE code=? ORDER BY date DESC LIMIT ?", conn, params=(code, days))
+            if len(df) >= days:
+                # 检查缓存是否够新（最新数据在3个交易日内）
+                latest_date = df['date'].iloc[0]
+                try:
+                    from datetime import timedelta
+                    latest_dt = datetime.datetime.strptime(str(latest_date), '%Y%m%d').date()
+                    if (datetime.date.today() - latest_dt).days <= 3:
+                        df = df.sort_values('date')
+                        df['returns'] = df['close'].pct_change()
+                        df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+                        df['ma5'] = df['close'].rolling(5).mean()
+                        df['ma20'] = df['close'].rolling(20).mean()
+                        return df[['date','open','close','high','low','volume','returns','volume_ratio','ma5','ma20']].dropna()
+                except:
+                    pass  # 日期解析失败，走刷新流程
     except Exception as e:
         logger.warning(f'get_stock_daily_cached({code}): SQLite cache miss or error: {e}')
         pass

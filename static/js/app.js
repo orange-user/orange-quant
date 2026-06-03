@@ -1,8 +1,8 @@
-const { createApp, ref, computed, onMounted, onUnmounted } = Vue;
+const { createApp, ref, computed, watch, onMounted, onUnmounted } = Vue;
 createApp({
   delimiters: ['[[', ']]'],
   setup() {
-    // Toast system
+    // Toast system (GSAP animated)
     function showToast(msg, type='success', duration=2500) {
       const container = document.getElementById('toastContainer');
       if (!container) return;
@@ -10,7 +10,70 @@ createApp({
       el.className = 'toast' + (type === 'error' ? ' toast-error' : type === 'warning' ? ' toast-warning' : ' toast-success');
       el.textContent = msg;
       container.appendChild(el);
-      setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, duration);
+      if (typeof gsap !== 'undefined') {
+        gsap.from(el, { y: -20, opacity: 0, duration: 0.25, ease: 'power2.out' });
+        gsap.to(el, { opacity: 0, duration: 0.3, delay: duration/1000 - 0.3, ease: 'power2.in',
+          onComplete: () => el.remove() });
+      } else {
+        setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, duration);
+      }
+    }
+
+    // GSAP animation utilities
+    function gsapAnim(fn) { if (typeof gsap !== 'undefined') fn(); }
+
+    function animateHeader() {
+      gsapAnim(() => {
+        gsap.from('.site-header', { y: -30, opacity: 0, duration: 0.5, ease: 'power2.out' });
+        gsap.from('.tab-bar .tab', { y: -10, opacity: 0, duration: 0.4, stagger: 0.08, ease: 'back.out(1.5)', delay: 0.2 });
+      });
+    }
+
+    function animateStockCards() {
+      gsapAnim(() => {
+        gsap.from('.stock-result-card', { x: -20, opacity: 0, duration: 0.35, stagger: 0.035, ease: 'power2.out' });
+      });
+    }
+
+    function animateSignalScores() {
+      gsapAnim(() => {
+        document.querySelectorAll('.signal-score').forEach(el => {
+          const final = parseInt(el.textContent);
+          if (!isNaN(final)) {
+            el.textContent = '0';
+            gsap.to({ v: 0 }, { v: final, duration: 0.8, ease: 'power2.out',
+              onUpdate: function() { el.textContent = Math.round(this.targets()[0].v); }
+            });
+          }
+        });
+      });
+    }
+
+    function animateChart(elId) {
+      gsapAnim(() => {
+        const el = document.getElementById(elId);
+        if (el) gsap.from(el, { opacity: 0, scaleY: 0.85, duration: 0.5, ease: 'back.out(1.2)', transformOrigin: 'bottom center' });
+      });
+    }
+
+    function animateStatNumbers() {
+      gsapAnim(() => {
+        document.querySelectorAll('.stat-num').forEach(el => {
+          const raw = el.textContent.replace(/[^0-9.\-]/g, '');
+          const final = parseFloat(raw) || 0;
+          const isPct = el.textContent.includes('%');
+          const prefix = el.textContent.startsWith('+') ? '+' : '';
+          if (!final) return;
+          el.textContent = '0' + (isPct ? '%' : '');
+          gsap.to({ v: 0 }, {
+            v: final, duration: 1.0, ease: 'power2.out',
+            onUpdate: function() {
+              const v = this.targets()[0].v;
+              el.textContent = prefix + (Number.isInteger(v) ? Math.round(v) : v.toFixed(1)) + (isPct ? '%' : '');
+            }
+          });
+        });
+      });
     }
 
     // Fetch with timeout
@@ -45,20 +108,6 @@ createApp({
     const currentTime = ref(''); const currentDate = ref('');
     const yiming = ref({id:1,text:'加载中...',translation:'',summary:''});
 
-    // Pixel pet (小橘子)
-    const petMessage = ref('汪汪~');
-    const petX = ref(typeof window !== 'undefined' ? window.innerWidth - 100 : 700);
-    const petY = ref(typeof window !== 'undefined' ? window.innerHeight - 140 : 400);
-    const petSleeping = ref(true);
-    const petDragging = ref(false);
-    const petAnimFrame = ref(0);
-    const petMood = ref('happy'); // happy, excited, curious, sleepy
-    const petState = ref('stand'); // stand, sit, stretch
-    const petWagging = ref(true);
-    const dragStartX = ref(0); const dragStartY = ref(0);
-    const petStartX_val = ref(0); const petStartY_val = ref(0);
-    let petStateChange = 0; // frame counter for idle state changes
-
     // Auto scan
     const autoScanEnabled = ref(false); const scanTimer = ref(null);
 
@@ -77,7 +126,7 @@ createApp({
     const factorLearningOpen = ref(false);
 
     // Server management
-    const weightsResult = ref(null); const dataQuality = ref(null); const updateResult = ref('');
+    const weightsResult = ref(null); const dataQuality = ref(null); const updateResult = ref(''); const wudaoStatus = ref(null);
 
     // Factor detail
     const factorDetailVisible = ref(false); const factorDetailCode = ref('');
@@ -182,7 +231,12 @@ createApp({
       total.value = d.total || 0;
       cached.value = !!d.cached;
       if (d.stocks && d.stocks.length) {
-        setTimeout(() => renderSignalDist(), 100);
+        setTimeout(() => {
+          renderSignalDist();
+          animateChart('signalDistChart');
+          setTimeout(animateStockCards, 50);
+          setTimeout(animateSignalScores, 150);
+        }, 100);
       }
     }
 
@@ -235,6 +289,7 @@ createApp({
     async function loadStats() {
       try { const r = await fetch('/api/stats'); stats.value = await r.json(); } catch(e) {}
       try { const r = await fetch('/api/trades'); trades.value = await r.json(); } catch(e) {}
+      setTimeout(animateStatNumbers, 200);
     }
 
     async function loadDiary() {
@@ -525,338 +580,15 @@ createApp({
     async function checkDataQuality() {
       try { const r = await fetch('/api/data_quality'); dataQuality.value = await r.json(); } catch(e) {}
     }
+    async function checkWudaoStatus() {
+      try { const r = await fetch('/api/wudao_status'); wudaoStatus.value = await r.json(); } catch(e) {}
+    }
     async function gitUpdate() {
       try { const r = await fetch('/api/update', {method:'POST'}); const d = await r.json(); updateResult.value = d.output || d.error; } catch(e) {}
     }
 
     async function loadFactorLearning() {
       try { const r = await fetch('/api/factor_learning'); factorLearning.value = await r.json(); } catch(e) {}
-    }
-
-    // ==================== Pixel Pet (小橘子) ====================
-
-    const petMessages = {
-      idle: ['今天也要加油哦~', '汪汪！', '盯盘中...', '要有耐心~', '小橘子陪着你', '摸头好舒服~'],
-      marketUp: ['行情不错！', '今天吃肉~', '涨了涨了！', '开心~汪!'],
-      marketDown: ['稳住心态', '跌了别慌', '机会是跌出来的', '耐心等待'],
-      morning: ['早上好！', '新的一天~', '开盘大吉！'],
-      afternoon: ['下午加油！', '打起精神~', '收盘前检查一下'],
-      evening: ['辛苦了~', '今天复盘了吗？', '记得写复盘'],
-      signals: ['有信号！注意看看', '选股机会来了', '扫描结果不错哦'],
-      profit: ['赚钱了汪！', '止盈要果断', '落袋为安~'],
-      loss: ['设好止损哦', '纪律第一', '错了就认'],
-      patted: ['嘿嘿~', '好舒服~', '再摸一下嘛', '汪呜~', '开心！', '嘤嘤嘤~'],
-    };
-
-    // Emotion keywords for diary analysis
-    const emotionKeywords = {
-      焦虑: ['焦虑', '紧张', '不安', '担心', '怕', '慌'],
-      贪婪: ['贪婪', '贪心', '追高', '冲动', 'FOMO'],
-      恐惧: ['恐惧', '害怕', '恐慌', '大跌', '崩盘'],
-      后悔: ['后悔', '早知道', '不应该', '卖飞', '踏空'],
-      耐心: ['耐心', '等待', '持有', '坚定', '冷静'],
-      自信: ['自信', '成功', '盈利', '赚钱', '开心'],
-    };
-
-    function analyzeDiaryEmotion() {
-      if (!diaryList.value || !diaryList.value.length) return null;
-      const recent = diaryList.value.slice(-5);
-      const scores = {};
-      for (const entry of recent) {
-        const text = entry.text || '';
-        for (const [emotion, keywords] of Object.entries(emotionKeywords)) {
-          for (const kw of keywords) {
-            if (text.includes(kw)) { scores[emotion] = (scores[emotion] || 0) + 1; }
-          }
-        }
-      }
-      if (!Object.keys(scores).length) return null;
-      const top = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
-      return { emotion: top[0], count: top[1] };
-    }
-
-    function getDiaryReminder() {
-      const result = analyzeDiaryEmotion();
-      if (!result) return null;
-      const reminders = {
-        焦虑: ['上次你说焦虑了，放松点，按计划执行就好~', '别太紧张，交易是概率游戏', '焦虑的时候少看盘，多休息'],
-        贪婪: ['追高容易被套哦，遵守规则', '贪心是交易的大敌，稳一点', '宁可错过，不要做错'],
-        恐惧: ['恐惧时别人在贪婪，坚持策略', '大跌往往是最好的买入时机', '别被短期波动吓到'],
-        后悔: ['过去的交易已经过去，向前看', '卖飞不可怕，机会总会有', '每一笔交易都是学习'],
-        耐心: ['耐心是交易最好的品质，继续保持', '你的耐心会有回报的', '守得住寂寞，等得到花开'],
-        自信: ['最近状态不错，继续保持纪律', '自信很好，但别忘了风控', '稳定盈利才是王道'],
-      };
-      const pool = reminders[result.emotion];
-      return pool ? pool[Math.floor(Math.random() * pool.length)] : null;
-    }
-
-    function getRandomMsg(category) {
-      const pool = petMessages[category] || petMessages.idle;
-      return pool[Math.floor(Math.random() * pool.length)];
-    }
-
-    function pickPetMessage() {
-      // Check diary reminders first (~30% chance)
-      if (Math.random() < 0.3) {
-        const reminder = getDiaryReminder();
-        if (reminder) return reminder;
-      }
-      const h = new Date().getHours();
-      if (h < 9) return getRandomMsg('morning');
-      if (h < 12) return Math.random() < 0.3 ? getRandomMsg('morning') : getRandomMsg('idle');
-      if (h < 15) return getRandomMsg('afternoon');
-      if (h < 18) return Math.random() < 0.3 ? getRandomMsg('afternoon') : getRandomMsg('idle');
-      return getRandomMsg('evening');
-    }
-
-    function togglePet() {
-      petSleeping.value = !petSleeping.value;
-      if (petSleeping.value) {
-        petMessage.value = 'zzZ... 回窝了';
-      } else {
-        const card = document.querySelector('.doghouse-card');
-        if (card) {
-          const r = card.getBoundingClientRect();
-          petX.value = r.right + 12;
-          petY.value = r.top;
-        } else {
-          petX.value = 340;
-          petY.value = 240;
-        }
-        petState.value = 'stand';
-        petStateChange = 0;
-        petMessage.value = '早安！小橘子来啦~';
-        petMood.value = 'happy';
-      }
-      drawDoghouse();
-    }
-
-    // ── Drawing ──
-    const PXL = 3; // 3px per cell → 32x32 grid on 96x96
-
-    function p(ctx, x, y, w, h, color) {
-      ctx.fillStyle = color; ctx.fillRect(x * PXL, y * PXL, w * PXL, h * PXL);
-    }
-
-    function drawDoghouse() {
-      const canvas = document.querySelector('.doghouse-card canvas');
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, 108, 64);
-      const pp = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
-
-      pp(8, 0, 92, 8, '#C62828');
-      pp(50, 8, 8, 6, '#B71C1C');
-      pp(8, 8, 92, 56, '#8D6E63');
-      pp(8, 8, 92, 4, '#6D4C41');
-      pp(36, 20, 36, 44, '#4E342E');
-      pp(66, 42, 4, 4, '#FFD54F');
-      pp(40, 30, 28, 12, '#FFECB3');
-      ctx.fillStyle = '#4E342E'; ctx.font = 'bold 8px sans-serif';
-      ctx.fillText('小橘子', 44, 40);
-
-      if (petSleeping.value) {
-        pp(44, 48, 14, 8, '#FCA311');
-        pp(46, 44, 10, 6, '#FFBA3B');
-        pp(38, 50, 8, 5, '#E68A00');
-        pp(48, 46, 2, 2, '#3B1F00');
-        pp(54, 46, 2, 2, '#3B1F00');
-        ctx.fillStyle = '#fff'; ctx.font = '8px sans-serif';
-        ctx.fillText('z', 24, 18); ctx.fillText('z', 18, 12); ctx.fillText('Z', 12, 6);
-      }
-    }
-
-    function drawPet() {
-      const canvas = document.querySelector('.pet-float canvas');
-      if (!canvas || petSleeping.value) return;
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, 64, 64);
-      const p = 8;
-
-      // 身体
-      ctx.fillStyle = '#d4a050';
-      ctx.fillRect(p * 2, p * 3, p * 4, p * 3);
-      // 肚子
-      ctx.fillStyle = '#f0d8a0';
-      ctx.fillRect(p * 3, p * 4, p * 2, p * 2);
-      // 头
-      ctx.fillStyle = '#d4a050';
-      ctx.fillRect(p * 1, p * 0.5, p * 5, p * 3);
-      // 耳朵（下垂）
-      ctx.fillStyle = '#b87830';
-      ctx.fillRect(0, 0, p * 2, p * 2.5);
-      ctx.fillRect(p * 6, 0, p * 2, p * 2.5);
-      ctx.fillStyle = '#e8b860';
-      ctx.fillRect(p * 0.5, 0, p, p * 1.5);
-      ctx.fillRect(p * 6.5, 0, p, p * 1.5);
-
-      // 眨眼动画
-      const blink = Math.floor(petAnimFrame.value / 15) % 6 === 0;
-      ctx.fillStyle = '#1a0a00';
-      if (!blink) {
-        ctx.fillRect(p * 2, p * 1.5, p, p * 1.5);
-        ctx.fillRect(p * 5, p * 1.5, p, p * 1.5);
-      }
-      // 眼睛高光
-      ctx.fillStyle = '#fff';
-      if (!blink) {
-        ctx.fillRect(p * 2.3, p * 1.5, 4, 4);
-        ctx.fillRect(p * 5.3, p * 1.5, 4, 4);
-      }
-
-      // 鼻子
-      ctx.fillStyle = '#2a0a00';
-      ctx.fillRect(p * 3.5, p * 2.5, p, p * 0.7);
-      // 嘴巴
-      ctx.fillStyle = '#6a3010';
-      ctx.fillRect(p * 3, p * 3.2, p * 2, p * 0.4);
-
-      // 摇尾巴
-      const wag = petWagging.value ? Math.sin(petAnimFrame.value * 0.6) * 4 : 0;
-      ctx.fillStyle = '#d4a050';
-      ctx.fillRect(p * 5.5, p * 1.5 + wag, p, p * 2);
-
-      // 小短腿
-      ctx.fillStyle = '#c09040';
-      ctx.fillRect(p * 2.2, p * 6, p, p * 1.5);
-      ctx.fillRect(p * 4.8, p * 6, p, p * 1.5);
-
-      // 项圈
-      ctx.fillStyle = '#e05030';
-      ctx.fillRect(p * 1.5, p * 3, p * 5, p * 0.5);
-
-      // 摸头反应
-      if (petBlush.value > 0) {
-        ctx.fillStyle = `rgba(255, 138, 128, ${petBlush.value})`;
-        ctx.fillRect(p * 1.8, p * 3.5, p * 0.8, p * 0.5);
-        ctx.fillRect(p * 5.4, p * 3.5, p * 0.8, p * 0.5);
-      }
-
-      // 爱心
-      for (const heart of petHearts.value) {
-        const a = heart.life / heart.maxLife;
-        ctx.fillStyle = `rgba(255, 82, 82, ${a})`;
-        ctx.font = `${heart.size}px sans-serif`;
-        ctx.fillText('♥', heart.x, heart.y);
-      }
-    }
-
-    // ── Head pat ──
-    const petBlush = ref(0);
-    const petHearts = ref([]);
-    let blushTimer = null;
-
-    function patHead(e) {
-      if (petSleeping.value) return;
-      e && e.preventDefault();
-      petMessage.value = getRandomMsg('patted');
-      petMood.value = 'happy';
-      petBlush.value = 0.8;
-      if (blushTimer) clearTimeout(blushTimer);
-      blushTimer = setTimeout(() => { petBlush.value = 0; }, 1500);
-      // Floating hearts
-      const heart = { x: 30 + Math.random() * 20, y: 20, life: 30, maxLife: 30, size: 10 + Math.random() * 6 };
-      petHearts.value = [...petHearts.value.slice(-4), heart];
-    }
-
-    // ── Drag ──
-    function getPos(e) {
-      return e.touches ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : { x: e.clientX, y: e.clientY };
-    }
-
-    function startDrag(e) {
-      if (petSleeping.value) return;
-      e.preventDefault();
-      petDragging.value = true;
-      const pos = getPos(e);
-      dragStartX.value = pos.x;
-      dragStartY.value = pos.y;
-      petStartX_val.value = petX.value;
-      petStartY_val.value = petY.value;
-      window.addEventListener('mousemove', onDrag);
-      window.addEventListener('mouseup', stopDrag);
-      window.addEventListener('touchmove', onDrag, { passive: false });
-      window.addEventListener('touchend', stopDrag);
-    }
-
-    function onDrag(e) {
-      if (!petDragging.value) return;
-      const pos = getPos(e);
-      petX.value = petStartX_val.value + (pos.x - dragStartX.value);
-      petY.value = petStartY_val.value + (pos.y - dragStartY.value);
-    }
-
-    function stopDrag() {
-      petDragging.value = false;
-      window.removeEventListener('mousemove', onDrag);
-      window.removeEventListener('mouseup', stopDrag);
-      window.removeEventListener('touchmove', onDrag);
-      window.removeEventListener('touchend', stopDrag);
-    }
-
-    // ── Animation loop (requestAnimationFrame for 60fps) ──
-    function onVisibilityChange() {
-      if (document.hidden) {
-        if (petRafId) { cancelAnimationFrame(petRafId); petRafId = null; }
-      } else {
-        if (!petRafId) { lastPetTime = performance.now(); petRafId = requestAnimationFrame(petLoop); }
-      }
-    }
-
-    let petRafId = null;
-    let lastPetTime = performance.now();
-    const PET_FRAME_MS = 1000 / 60;
-
-    function petLoop(now) {
-      if (petSleeping.value) {
-        // 睡觉时降到约1fps省电
-        if (now - lastPetTime >= 1000) {
-          lastPetTime = now;
-          drawDoghouse();
-        }
-        petRafId = requestAnimationFrame(petLoop);
-        return;
-      }
-
-      if (now - lastPetTime >= PET_FRAME_MS) {
-        lastPetTime = now;
-        drawDoghouse();
-        drawPet();
-        petAnimFrame.value++;
-        petStateChange++;
-
-        if (!petSleeping.value) {
-          // Idle state transitions
-          if (petStateChange > 300 && Math.random() < 0.006) {
-            petState.value = petState.value === 'stand' ? 'sit' : 'stand';
-            petStateChange = 0;
-          }
-          if (petStateChange > 400 && Math.random() < 0.004 && petState.value === 'stand') {
-            petState.value = 'stretch';
-            setTimeout(() => { if (petState.value === 'stretch') petState.value = 'stand'; }, 2500);
-            petStateChange = 0;
-          }
-          // Rotate messages
-          if (petAnimFrame.value % 300 === 0) petMessage.value = pickPetMessage();
-          // Market mood
-          if (petAnimFrame.value % 360 === 0) {
-            const ticker = marketTicker.value;
-            if (ticker && ticker.sh_pe !== undefined) {
-              if (ticker.sh_pe > 0.5) petMood.value = 'happy';
-              else if (ticker.sh_pe < -0.5) petMood.value = 'sad';
-              else petMood.value = 'curious';
-            }
-          }
-        }
-
-        // Heart animations
-        if (petHearts.value.length > 0) {
-          petHearts.value = petHearts.value
-            .map(h => ({ ...h, life: h.life - 1, y: h.y - 0.8 }))
-            .filter(h => h.life > 0);
-        }
-      }
-      petRafId = requestAnimationFrame(petLoop);
     }
 
     // ==================== Mount ====================
@@ -876,13 +608,11 @@ createApp({
       window.addEventListener('offline', () => showToast('网络已断开，数据可能不是最新的', 'warning', 4000));
       window.addEventListener('online', () => showToast('网络已恢复', 'success', 2000));
 
-      // Pixel pet: draw immediately, start animation loop at 60fps
-      drawDoghouse();
-      lastPetTime = performance.now();
-      petRafId = requestAnimationFrame(petLoop);
-      document.addEventListener('visibilitychange', onVisibilityChange);
+      // Page entrance animation
+      animateHeader();
 
       // 第一梯队：轻量级，并发加载
+      checkWudaoStatus(); setInterval(checkWudaoStatus, 300000); // 每5分钟刷新悟道状态
       fetchMarketTicker();
       loadStats();
       loadFactorLearning();
@@ -904,7 +634,49 @@ createApp({
       setInterval(fetchMarketTicker, 30000);
       setInterval(fetchHeatmap, 120000);
       setInterval(fetchMoney, 120000);
+
+      // Tab switch animation
+      watch(tab, () => {
+        gsapAnim(() => {
+          setTimeout(() => {
+            const active = document.querySelector('.page > div[style*="display: block"], .page > div:not([style*="display: none"])');
+            if (active) gsap.from(active, { opacity: 0, y: 8, duration: 0.2, ease: 'power1.out' });
+          }, 20);
+        });
+      });
     });
+
+    // 复制TOP3到剪贴板（用于发知识星球）
+    function copyTop3() {
+      const list = stocks.value;
+      if (!list || !list.length) { showToast('暂无信号数据', 'warning'); return; }
+      const top3 = list.slice(0, 3);
+      const date = new Date().toLocaleDateString('zh-CN');
+      let text = `📊 橘子量化 · 尾盘信号 ${date}\n`;
+      text += `━━━━━━━━━━━━━━━━━━\n\n`;
+      top3.forEach((s, i) => {
+        const arrow = s.change_pct >= 0 ? '📈' : '📉';
+        text += `【TOP${i+1}】${s.code} ${s.name} ${arrow}\n`;
+        text += `  现价: ${s.price}元  |  涨跌幅: ${s.change_pct >= 0 ? '+' : ''}${s.change_pct}%\n`;
+        text += `  信号分: ${s.signal}  |  RSI: ${s.rsi}  |  量比: ${s.volume_ratio}\n`;
+        if (s.priority_reason) text += `  逻辑: ${s.priority_reason}\n`;
+        text += `  策略: ${s.signal >= 70 ? '强烈买入' : s.signal >= 55 ? '建议买入' : '观察'}\n`;
+        if (s.kelly_pct) text += `  仓位: Kelly ${s.kelly_pct}% (${s.kelly_shares || '?'}手)\n`;
+        text += `\n`;
+      });
+      text += `━━━━━━━━━━━━━━━━━━\n`;
+      text += `⚠️ 量化信号仅供参考，投资有风险\n`;
+      text += `更多分析：登录网站查看\n`;
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('✅ TOP3已复制，去粘贴到知识星球吧！', 'success', 3000);
+      }).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); document.body.removeChild(ta);
+        showToast('✅ TOP3已复制', 'success', 2000);
+      });
+    }
 
     return {
       tab, loading, fetched, cached, status, message, stocks, total,
@@ -923,13 +695,10 @@ createApp({
       factorDetailVisible, factorDetailCode, factorDetailData, factorDetailSignal,
       factorDetailReason, factorDetailLoading, showFactorDetail,
       factorLearning, factorLearningOpen, loadFactorLearning,
-      weightsResult, dataQuality, updateResult,
-      updateWeights, checkDataQuality, gitUpdate,
+      weightsResult, dataQuality, updateResult, wudaoStatus,
+      updateWeights, checkDataQuality, checkWudaoStatus, gitUpdate,
       signalStats, topStrategies, showToast,
-      buying, selling,
-      // Pixel pet
-      petMessage, petX, petY, petSleeping, petDragging, petMood, petBlush, petHearts,
-      togglePet, startDrag, patHead,
+      buying, selling, copyTop3,
     };
   }
 }).mount('#app');

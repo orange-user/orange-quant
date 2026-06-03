@@ -294,6 +294,47 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/api/status')
+def api_status():
+    """系统状态"""
+    try:
+        from wudao_client import get_remaining_calls, get_call_count
+        remaining = get_remaining_calls()
+        used = get_call_count()
+    except:
+        remaining = 0
+        used = -1
+    return jsonify({
+        'status': 'ok',
+        'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'data_source': {
+            'primary': 'wudao' if used >= 0 else 'unknown',
+            'fallback': 'akshare',
+            'wudao_used': used,
+            'wudao_remaining': remaining,
+            'wudao_limit': 50,
+        }
+    })
+
+
+@app.route('/api/wudao_status')
+def wudao_status():
+    """悟道调用状态"""
+    try:
+        from wudao_client import get_remaining_calls, get_call_count
+        remaining = get_remaining_calls()
+        used = get_call_count()
+    except:
+        remaining = 0
+        used = -1
+    return jsonify({
+        'used': used,
+        'remaining': remaining,
+        'limit': 50,
+        'pct': round(used / 50 * 100, 1) if used > 0 else 0,
+    })
+
+
 @app.route('/mobile')
 def mobile():
     return render_template('mobile.html')
@@ -657,6 +698,16 @@ def analyze():
                         c['coint_pair'] = det.get('pair_code', '')
                 except:
                     pass
+            # 分数排名归一化
+            _sig_vals = [c['signal'] for c in candidates if isinstance(c.get('signal'), (int, float))]
+            if _sig_vals:
+                _min_s, _max_s = min(_sig_vals), max(_sig_vals)
+                if _max_s > _min_s:
+                    for c in candidates:
+                        c['signal'] = int((c['signal'] - _min_s) / (_max_s - _min_s) * 99 + 1)
+                else:
+                    for c in candidates:
+                        c['signal'] = 50
             candidates.sort(key=lambda x: x['signal'], reverse=True)
             _set_progress(100, '完成', '扫描完成')
             _SCAN_CACHE['time'] = time.time()
@@ -1320,6 +1371,16 @@ def ai_enhanced_scan():
                     r = row.iloc[0]
                     res['name'] = r['名称']; res['price'] = r['最新价']; res['change_pct'] = r['涨跌幅']
                     candidates.append(res)
+    # 分数排名归一化
+    _sig_vals = [c['signal'] for c in candidates if isinstance(c.get('signal'), (int, float))]
+    if _sig_vals:
+        _min_s, _max_s = min(_sig_vals), max(_sig_vals)
+        if _max_s > _min_s:
+            for c in candidates:
+                c['signal'] = int((c['signal'] - _min_s) / (_max_s - _min_s) * 99 + 1)
+        else:
+            for c in candidates:
+                c['signal'] = 50
     candidates.sort(key=lambda x:x['signal'], reverse=True)
     try:
         news = ak.stock_info_global_em().head(15).to_dict('records')
@@ -2131,22 +2192,81 @@ def ruflo_committee():
 
 @app.route('/api/deploy', methods=['POST'])
 def deploy_api():
-    """HTTP部署：接收.py文件上传 → 写文件 → 重启Gunicorn
-    用法: curl -X POST -H "X-Deploy-Token: po2024" -F "file=@engine.py" http://host/api/deploy
-          curl -X POST -H "X-Deploy-Token: po2024" -F "file=@app.py" http://host/api/deploy
+    """HTTP部署：接收.py文件或tar.gz归档上传 → 写文件 → 可选重启/命令
+    用法:
+      单文件: curl -X POST -H "X-Deploy-Token: po2024" -F "file=@engine.py" http://host/api/deploy
+      tar.gz: curl -X POST -H "X-Deploy-Token: po2024" -F "archive=@deploy.tar.gz" -F "command=nohup python3 -u server/monitor.py > logs/monitor.log 2>&1 &" http://host/api/deploy
     """
     token = request.headers.get('X-Deploy-Token', '')
     if token != DEPLOY_TOKEN:
         return jsonify({'error': '令牌错误'}), 403
 
+    import subprocess
+    import tarfile
+    import io
+
+    # 处理tar.gz归档上传
+    if 'archive' in request.files:
+        arch = request.files['archive']
+        base_dir = '/opt/quant_pulse/'
+        extracted = []
+        has_core = False
+        try:
+            raw = arch.read()
+            tar = tarfile.open(fileobj=io.BytesIO(raw), mode='r:gz')
+            extracted = [m.name for m in tar.getmembers()]  # 在close之前获取
+            tar.extractall(path=base_dir)
+            tar.close()
+            has_core = any(f in ('app.py', 'engine.py', 'config.py') for f in extracted)
+        except Exception as e:
+            return jsonify({'error': f'解压失败: {e}'}), 500
+
+        # 执行post-deploy命令
+        cmd = request.form.get('command', '')
+        cmd_out, cmd_err = '', ''
+        if cmd:
+            try:
+                r = subprocess.run(['bash', '-c', cmd], capture_output=True, text=True, timeout=30, cwd=base_dir)
+                cmd_out, cmd_err = r.stdout[-300:], r.stderr[-300:]
+            except subprocess.TimeoutExpired:
+                cmd_err = '命令超时(30s)'
+            except Exception as e:
+                cmd_err = str(e)
+
+        # 重启主服务（如果上传的文件中包含app.py/engine.py等）
+        restart_msg = ''
+        if has_core or request.form.get('restart', '0') == '1':
+            try:
+                r = subprocess.run(['systemctl', 'restart', 'quant_pulse'], capture_output=True, text=True, timeout=15)
+                restart_msg = '服务已重启'
+            except subprocess.TimeoutExpired:
+                restart_msg = '重启命令已发送（超时）'
+            except FileNotFoundError:
+                restart_msg = '非systemd环境'
+            except Exception as e:
+                restart_msg = f'重启失败: {e}'
+
+        return jsonify({
+            'ok': True,
+            'message': f'归档已部署({len(extracted)}个文件)',
+            'extracted': extracted,
+            'restart': restart_msg,
+            'command_stdout': cmd_out[-500:] if cmd_out else '',
+            'command_stderr': cmd_err[-500:] if cmd_err else ''
+        })
+
+    # 处理单文件上传（原有逻辑 + 扩展文件类型）
     if 'file' not in request.files:
-        return jsonify({'error': '缺少file字段'}), 400
+        return jsonify({'error': '缺少file字段或archive字段'}), 400
 
     f = request.files['file']
     filename = f.filename or ''
-    allowed = ['engine.py', 'app.py', 'config.py']
+    allowed = ['engine.py', 'app.py', 'config.py', 'ai_service.py',
+               '_pattern_recognition.py', '_sector_heat.py', 'stop_management.py',
+               'data.py', 'scraper.py', 'wechat_bot.py']
+
     if filename not in allowed:
-        return jsonify({'error': f'只接受{allowed}'}), 400
+        return jsonify({'error': f'不允许的文件: {filename}，接受: {allowed}'}), 400
 
     deploy_path = f'/opt/quant_pulse/{filename}'
     try:
@@ -2154,24 +2274,21 @@ def deploy_api():
     except Exception as e:
         return jsonify({'error': f'写入失败: {e}'}), 500
 
-    try:
-        import subprocess
-        r = subprocess.run(
-            ['systemctl', 'restart', 'quant_pulse'],
-            capture_output=True, text=True, timeout=15
-        )
-        return jsonify({
-            'ok': True,
-            'message': 'engine.py已更新，服务已重启',
-            'stdout': r.stdout[-200:] if r.stdout else '',
-            'stderr': r.stderr[-200:] if r.stderr else ''
-        })
-    except subprocess.TimeoutExpired:
-        return jsonify({'ok': True, 'message': '文件已写入，重启命令已发送（超时）'})
-    except FileNotFoundError:
-        return jsonify({'ok': True, 'message': '文件已写入（非systemd环境，请手动重启）'})
-    except Exception as e:
-        return jsonify({'error': f'重启失败: {e}'}), 500
+    msg = f'{filename}已更新'
+    # 核心文件改完重启
+    if filename in ('app.py', 'engine.py', 'config.py'):
+        try:
+            r = subprocess.run(['systemctl', 'restart', 'quant_pulse'], capture_output=True, text=True, timeout=15)
+            msg += '，服务已重启'
+            return jsonify({'ok': True, 'message': msg, 'stdout': r.stdout[-200:] if r.stdout else '', 'stderr': r.stderr[-200:] if r.stderr else ''})
+        except subprocess.TimeoutExpired:
+            return jsonify({'ok': True, 'message': f'{msg}，重启命令已发送（超时）'})
+        except FileNotFoundError:
+            return jsonify({'ok': True, 'message': f'{msg}（非systemd环境，请手动重启）'})
+        except Exception as e:
+            return jsonify({'error': f'重启失败: {e}'}), 500
+
+    return jsonify({'ok': True, 'message': msg})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
