@@ -39,6 +39,7 @@ class Monitor:
         self.watch_pool = []
         self.d1_cache = {}
         self.market_up = True  # 大盘过滤
+        self._d2_qualified = set()  # 已通过15分K线确认的股票池
         self._load_positions()
 
     # ── 候选池 ──
@@ -111,8 +112,21 @@ class Monitor:
             pass
 
     def check_market(self):
-        """大盘环境过滤"""
+        """大盘环境过滤：上证指数涨跌"""
         try:
+            # 直接用上证指数判断
+            url = TENCENT_BATCH_URL + 'sh000001'
+            r = self.http.get(url, timeout=5)
+            if r.status_code == 200:
+                parts = r.text.split('~')
+                if len(parts) > 4:
+                    price = float(parts[3]) if parts[3] else 0
+                    prev = float(parts[4]) if parts[4] else 0
+                    if prev > 0:
+                        idx_chg = (price - prev) / prev * 100
+                        self.market_up = idx_chg > -0.5
+                        return
+            # 备选：用池中股票平均涨跌
             quotes = self.fetch_quotes()
             if quotes:
                 changes = [q['change_pct'] for q in quotes.values() if q.get('change_pct') is not None]
@@ -175,28 +189,67 @@ class Monitor:
             if not d1:
                 return False, None
             d1_open = d1['d1_open']
+            d1_close = d1['d1_close']
+            d1_chg = abs(d1.get('d1_chg', 5))
             cur = quote['price']
             low = quote['low']
 
-            # 条件1: 回踩D1开盘价
-            if not (low <= d1_open * 1.02 and cur > low * 1.005):
-                return False, None
+            # 今日必须低开/平开（不能高开太多）
+            open_p = quote.get('open', cur)
+            if open_p > d1_close * 1.02:
+                return False, None  # 高开超2%不追
 
-            # 条件2: 15分钟K线确认反包
-            try:
-                from data import get_minute_kline
-                m15 = get_minute_kline(code, scale=15, bars=10)
-                if m15 is not None and len(m15) >= 3:
-                    today_str = datetime.now().strftime('%Y-%m-%d')
-                    today15 = m15[m15['date'].str.startswith(today_str)]
-                    if len(today15) >= 3:
-                        last3 = today15.tail(3)
-                        if last3['close'].values[-1] <= last3['close'].values[0]:
-                            return False, None  # 15分K线在走低，不确认
-            except:
-                pass
+            # 条件1: 今日最低价必须回踩到D1开盘价+2%以内
+            if low > d1_open * 1.03:
+                return False, None  # 最低都没回踩到位
 
-            return True, f'D2(昨{d1["d1_chg"]}%放量,回踩{d1_open:.2f},现{cur})'
+            # 条件2: 不能跌破D1开盘价太多（跌太多太弱，不是回踩）
+            if low < d1_open * 0.97:
+                return False, None  # 跌破D1开盘价3%以上，太弱
+
+            # 条件3: 当前价必须在D1开盘价的2%以内（还没涨上去）
+            if cur > d1_open * 1.02:
+                return False, None  # 已经涨上去了，买点已过
+
+            # 条件4: 已从最低点反弹（确认止跌）
+            if cur < low * 1.005:
+                return False, None  # 还没确认反弹
+
+            # 条件3: 15分钟K线底部确认（只做一次，通过后加入白名单）
+            # 注：Sina API可能被限流(456错误)，如无法获取则跳过K线确认
+            if code not in self._d2_qualified:
+                passed = False
+                kline_available = False
+                try:
+                    from data import get_minute_kline
+                    m15 = get_minute_kline(code, scale=15, bars=20)
+                    if m15 is not None and len(m15) >= 5:
+                        kline_available = True
+                        today_str = datetime.now().strftime('%Y-%m-%d')
+                        today15 = m15[m15['date'].str.startswith(today_str)]
+                        if len(today15) >= 4:
+                            min_idx = today15['low'].idxmin()
+                            min_close = today15.loc[min_idx, 'close']
+                            post_min = today15.loc[min_idx:]
+                            latest_close = post_min['close'].iloc[-1]
+                            # 从最低点反弹>0.5% 或 最近2根连续收高
+                            if latest_close > min_close * 1.005:
+                                passed = True
+                            last2 = today15.tail(2)
+                            if len(last2) == 2 and last2['close'].iloc[-1] > last2['close'].iloc[0]:
+                                passed = True
+                except:
+                    pass
+                if kline_available and not passed:
+                    return False, None  # 有K线数据但没确认底部
+                # 无K线数据（Sina限流）或已确认 → 通过
+                self._d2_qualified.add(code)
+                if kline_available:
+                    log.info(f'{code} 15分K线确认通过')
+                else:
+                    log.info(f'{code} K线数据不可用(Sina限流)，跳过K线确认')
+
+            return True, f'D2(昨{d1_chg:.0f}%放量,回踩{d1_open:.2f},现{cur})'
         except:
             return False, None
 
