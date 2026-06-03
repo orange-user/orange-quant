@@ -1,10 +1,16 @@
 import sqlite3
 import datetime
+import sys
+import os
 import time as _time
 import numpy as np
 import pandas as pd
 import akshare as ak
 from config import *
+
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+os.makedirs(CACHE_DIR, exist_ok=True)
+_CSV_CACHE_TTL = 86400 * 7  # CSV缓存保留7天
 
 # ==================== 进程内缓存 ====================
 _pool_cache = {'data': None, 'time': 0}
@@ -21,6 +27,35 @@ def _cache_get(cache, key, ttl):
 
 def _cache_set(cache, key, data):
     cache[key] = {'data': data, 'time': _time.time()}
+
+# ==================== CSV多级缓存 ====================
+def _csv_cache_path(code):
+    return os.path.join(CACHE_DIR, f'{code}.csv')
+
+def _csv_cache_save(code, df):
+    """保存到CSV缓存 (存60天数据)"""
+    try:
+        path = _csv_cache_path(code)
+        df.tail(60).to_csv(path, index=False)
+    except Exception:
+        pass
+
+def _csv_cache_load(code, days=60):
+    """从CSV缓存读取"""
+    try:
+        path = _csv_cache_path(code)
+        if not os.path.exists(path):
+            return None
+        age = _time.time() - os.path.getmtime(path)
+        if age > _CSV_CACHE_TTL:
+            return None
+        df = pd.read_csv(path)
+        if len(df) >= days:
+            return df.tail(days)
+        return None
+    except Exception:
+        return None
+
 
 def clear_caches():
     _pool_cache.clear(); _pool_cache['data'] = None; _pool_cache['time'] = 0
@@ -61,6 +96,54 @@ def get_stock_daily_cached(code, days=60):
     finally:
         conn.close()
 
+    # Try wudao-stock MCP (high-quality kline, but limited to 50 calls/day)
+    try:
+        from wudao_client import kline as wudao_kline
+        result = wudao_kline([code], days)
+        if result and result.get('content'):
+            # Parse MCP response - find structured data
+            sc = result.get('structuredContent') or {}
+            items = None
+            if sc.get('data', {}).get('batch'):
+                items = sc['data'].get('items', [])
+            elif sc.get('data', {}).get('rows'):
+                items = [sc['data']]
+            if items:
+                for item in items:
+                    klines = item.get('rows', [])
+                    if not klines or len(klines) < days * 0.5:
+                        continue
+                    rows = []
+                    for k in klines:
+                        rows.append({
+                            'date': str(k.get('date', k.get('day', ''))).replace('-', ''),
+                            'open': float(k.get('open', 0)),
+                            'close': float(k.get('close', 0)),
+                            'high': float(k.get('high', 0)),
+                            'low': float(k.get('low', 0)),
+                            'volume': float(k.get('volume', 0)),
+                        })
+                    if not rows:
+                        continue
+                    df = pd.DataFrame(rows).tail(days)
+                    conn = sqlite3.connect(DB_PATH)
+                    for _, row in df.iterrows():
+                        try:
+                            conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                                         (code, str(row['date']), float(row['open']), float(row['close']),
+                                          float(row['high']), float(row['low']), float(row['volume'])))
+                        except: pass
+                    conn.commit()
+                    conn.close()
+                    df['returns'] = df['close'].pct_change()
+                    df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+                    df['ma5'] = df['close'].rolling(5).mean()
+                    df['ma20'] = df['close'].rolling(20).mean()
+                    logger.info(f'wudao_kline({code}): {len(df)}条')
+                    return df[['date','open','close','high','low','volume','returns','volume_ratio','ma5','ma20']].dropna()
+    except Exception as e:
+        logger.debug(f'wudao_kline({code}): {e}')
+
     try:
         df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
         if len(df) < days:
@@ -82,9 +165,53 @@ def get_stock_daily_cached(code, days=60):
         df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
         df['ma5'] = df['close'].rolling(5).mean()
         df['ma20'] = df['close'].rolling(20).mean()
+        # 保存到CSV缓存
+        _csv_cache_save(code, df)
         return df[['date','open','close','high','low','volume','returns','volume_ratio','ma5','ma20']].dropna()
     except Exception as e:
         logger.warning(f'get_stock_daily_cached({code}): primary fetch failed: {e}')
+
+    # Fallback: CSV缓存 (akshare失败时读本地)
+    try:
+        df = _csv_cache_load(code, days)
+        if df is not None:
+            df['returns'] = df['close'].pct_change()
+            df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+            df['ma5'] = df['close'].rolling(5).mean()
+            df['ma20'] = df['close'].rolling(20).mean()
+            return df[['date','open','close','high','low','volume','returns','volume_ratio','ma5','ma20']].dropna()
+    except Exception as e:
+        logger.warning(f'get_stock_daily_cached({code}): CSV cache failed: {e}')
+
+    # Fallback: adata (when akshare is down)
+    try:
+        sys.path.insert(0, r'C:\Users\Administrator\Desktop\adata')
+        from adata.stock.market.stock_market.stock_market import StockMarket
+        m = StockMarket()
+        result = m.get_market(code, start_date=(
+            datetime.datetime.now() - datetime.timedelta(days=days+10)).strftime('%Y-%m-%d'),
+            end_date=datetime.datetime.now().strftime('%Y-%m-%d'))
+        if hasattr(result, 'to_dict') and len(result) >= days:
+            df = result.tail(days).copy()
+            df = df.rename(columns={'trade_date': 'date'})
+            df['date'] = df['date'].astype(str)
+            conn = sqlite3.connect(DB_PATH)
+            for _, row in df.iterrows():
+                try:
+                    conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                                 (code, str(row['date']), float(row['open']), float(row['close']),
+                                  float(row['high']), float(row['low']), float(row['volume'])))
+                except:
+                    pass
+            conn.commit()
+            conn.close()
+            df['returns'] = df['close'].pct_change()
+            df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+            df['ma5'] = df['close'].rolling(5).mean()
+            df['ma20'] = df['close'].rolling(20).mean()
+            return df[['date','open','close','high','low','volume','returns','volume_ratio','ma5','ma20']].dropna()
+    except Exception as e2:
+        logger.warning(f'get_stock_daily_cached({code}): adata fallback failed: {e2}')
 
     # Fallback: Tencent history API (works even with future system dates)
     try:
@@ -134,6 +261,24 @@ def get_index_daily(code="sh000300", days=60):
     cached = _cache_get(_index_cache, cache_key, 300)
     if cached is not None:
         return cached
+    # Tencent API for index data (akshare hangs)
+    try:
+        _raw_code = code.replace('sh','').replace('sz','')
+        _pre = 'sz' if '399' in _raw_code else 'sh'
+        _idx_url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={_pre}{_raw_code},day,,,{days},qfq'
+        import httpx as _h
+        _resp = _h.get(_idx_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        if _resp.status_code == 200:
+            _j = _resp.json()
+            _qfq = _j.get('data', {}).get(f'{_pre}{_raw_code}', {}).get('qfqday', [])
+            if _qfq:
+                _rows = [{'date': str(l[0]).replace('-',''), 'close': float(l[2])} for l in _qfq if len(l) >= 3]
+                _df = pd.DataFrame(_rows).tail(days)
+                _df['returns'] = _df['close'].pct_change()
+                _cache_set(_index_cache, cache_key, _df)
+                return _df
+    except Exception:
+        pass
     try:
         df = ak.stock_zh_index_daily(symbol=code)
         df = df.tail(days).copy()
@@ -145,12 +290,120 @@ def get_index_daily(code="sh000300", days=60):
         return None
 
 
+# ── 分钟K线（Sina API）──
+
+_sina_min_cache = {}
+
+
+def get_minute_kline(code, scale=15, bars=96):
+    """获取分钟K线（Sina API）
+
+    scale: 5/15/30/60 分钟
+    bars: 返回K线数量（最多约200）
+    返回 DataFrame[date, open, close, high, low, volume]
+    """
+    cache_key = f'{code}:{scale}:{bars}'
+    cached = _cache_get(_sina_min_cache, cache_key, 30)  # 缓存30秒
+    if cached is not None:
+        return cached
+
+    import httpx as _h
+    prefix = 'sh' if code.startswith(('6', '9')) else 'sz'
+    url = (
+        f'http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+        f'CN_MarketData.getKLineData?symbol={prefix}{code}&scale={scale}&datalen={bars}'
+    )
+    try:
+        r = _h.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        if not data or not isinstance(data, list):
+            return None
+        rows = []
+        for d in data:
+            rows.append({
+                'date': d['day'],
+                'open': float(d['open']),
+                'close': float(d['close']),
+                'high': float(d['high']),
+                'low': float(d['low']),
+                'volume': float(d['volume']),
+            })
+        df = pd.DataFrame(rows)
+        _cache_set(_sina_min_cache, cache_key, df)
+        return df
+    except Exception as e:
+        logger.debug(f'get_minute_kline({code}): {e}')
+        return None
+
+
+def get_mtf_kline(code):
+    """多时间框架K线获取（日线+60分+15分+5分）
+
+    返回 {daily, hour, quarter, five} → DataFrame
+    用于多时间框架形态识别和信号合成
+    """
+    result = {}
+
+    daily = get_stock_daily_cached(code, 60)
+    if daily is not None and len(daily) > 10:
+        result['daily'] = daily
+
+    hour = get_minute_kline(code, scale=60, bars=48)
+    if hour is not None and len(hour) > 5:
+        result['hour'] = hour
+
+    quarter = get_minute_kline(code, scale=15, bars=48)
+    if quarter is not None and len(quarter) > 5:
+        result['quarter'] = quarter
+
+    five = get_minute_kline(code, scale=5, bars=48)
+    if five is not None and len(five) > 5:
+        result['five'] = five
+
+    return result
+
+
+def _request_with_timeout(func, *args, timeout=8):
+    """带超时的请求包装器，超时返回None"""
+    import threading
+    result = [None]
+    exc = [None]
+    def runner():
+        try:
+            result[0] = func(*args)
+        except Exception as e:
+            exc[0] = e
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return None
+    if exc[0] is not None:
+        raise exc[0]
+    return result[0]
+
+
 def get_stock_info(code):
+    """获取股票基本面（优先pool缓存，回退wudao批量，最后akshare）"""
     cached = _cache_get(_info_cache, code, 3600)
     if cached is not None:
         return cached
+    # 从pool缓存读取（wudao stock_screener已包含基本面）
+    global _pool_cache
+    pool_df = _cache_get(_pool_cache, 'pool', 30)
+    if pool_df is not None and code in pool_df['代码'].values:
+        row = pool_df[pool_df['代码'] == code].iloc[0]
+        info = {}
+        if '量比' in pool_df.columns:
+            info['量比'] = row.get('量比', 1)
+        _cache_set(_info_cache, code, info)
+        return info
     try:
-        df = ak.stock_individual_info_em(symbol=code)
+        df = _request_with_timeout(ak.stock_individual_info_em, symbol=code)
+        if df is None:
+            return {}
         info = {}
         for _, row in df.iterrows():
             info[row['item']] = row['value']
@@ -165,7 +418,9 @@ def get_stock_sector(code):
     if cached is not None:
         return cached
     try:
-        df = ak.stock_board_concept_cons_em(symbol=code)
+        df = _request_with_timeout(ak.stock_board_concept_cons_em, symbol=code)
+        if df is None:
+            return []
         sectors = df['板块名称'].head(5).tolist() if df is not None and len(df) > 0 else []
         _cache_set(_sector_cache, code, sectors)
         return sectors
@@ -174,6 +429,19 @@ def get_stock_sector(code):
 
 
 def get_market_change():
+    """大盘涨跌（优先wudao market_overview，回退akshare）"""
+    try:
+        from wudao_client import market_overview as wudao_market
+        r = wudao_market()
+        if r:
+            # 从文本中解析大盘数据
+            import re
+            m = re.search(r'[-+]?\d+\.?\d*', r)
+            if m:
+                # 简单返回，主要用akshare的精确数据
+                pass
+    except:
+        pass
     try:
         df = ak.stock_zh_index_daily(symbol="sh000001")
         if len(df) >= 1:
@@ -197,6 +465,48 @@ def _get_pool_snapshot():
     import re
     import requests as req
     from akshare.utils import demjson as _demjson
+
+    # Source 0: wudao-stock MCP stock_screener (最快，1次调用)
+    try:
+        from wudao_client import stock_screener as wudao_screener
+        result = wudao_screener(
+            market_cap_min_yi=50, price_min=3,
+            market='main', exclude_st=True,
+            limit=300, sort_by='volumeRatio', sort_order='desc',
+        )
+        if result:
+            sc = result.get('structuredContent') or {}
+            rows = sc.get('data', {}).get('rows', [])
+            if rows and len(rows) > 100:
+                results = []
+                for item in rows:
+                    code = str(item.get('code', ''))
+                    if code.startswith(('688', '689', '300', '301')):
+                        continue
+                    results.append({
+                        '代码': code,
+                        '名称': item.get('name', ''),
+                        '最新价': float(item.get('close', 0)),
+                        '涨跌幅': float(item.get('closePctChg', 0)),
+                        '总市值': float(item.get('totalMarketCapYi', 0)) * 1e8,
+                        '量比': float(item.get('volumeRatio', 1)),
+                        '行业': item.get('industry', ''),
+                        'pe': item.get('peTtm', 0),
+                        'pb': item.get('pb', 0),
+                        '昨收': float(item.get('preClose', 0)),
+                        'ma5': float(item.get('ma5', 0)) if item.get('ma5') else 0,
+                        'ma10': float(item.get('ma10', 0)) if item.get('ma10') else 0,
+                        'ma20': float(item.get('ma20', 0)) if item.get('ma20') else 0,
+                    })
+                if len(results) > 200:
+                    df = pd.DataFrame(results)
+                    _pool_cache['data'] = df; _pool_cache['time'] = _time.time()
+                    logger.info(f'_get_pool_snapshot: wudao {len(results)} stocks')
+                    return df
+                else:
+                    logger.info(f'_get_pool_snapshot: wudao returned {len(rows)} rows (<200), fallback')
+    except Exception as e:
+        logger.debug(f'_get_pool_snapshot: wudao skipped: {e}')
 
     # Source 1: Tencent batch quotes (most reliable, ~40-45s for all stocks)
     # Moved first because EastMoney/Sina block future dates (system date 2026)
@@ -246,18 +556,23 @@ def _get_pool_snapshot():
                         name = fields[1]
                         code = fields[2]
                         price = float(fields[3]) if fields[3] else 0
+                        yclose = float(fields[4]) if fields[4] else 0
                         chg_pct = float(fields[32]) if fields[32] else 0
+                        day_high = float(fields[33]) if fields[33] else 0
+                        day_low = float(fields[34]) if fields[34] else 0
                         mktcap = float(fields[44]) * 1e8 if fields[44] else 1e12  # 亿元 -> 元
                         if price > 0 and code:
                             results.append({
                                 "代码": code, "名称": name, "最新价": price,
-                                "涨跌幅": chg_pct, "总市值": mktcap
+                                "涨跌幅": chg_pct, "总市值": mktcap,
+                                "昨收": yclose, "今日最高": day_high, "今日最低": day_low
                             })
                     except (ValueError, IndexError):
                         continue
 
             if len(results) > 500:
                 df = pd.DataFrame(results)
+                df = df[~df['代码'].astype(str).str.startswith(('688', '689', '300', '301'))]
                 _pool_cache['data'] = df; _pool_cache['time'] = _time.time()
                 return df
         except Exception:
@@ -268,6 +583,7 @@ def _get_pool_snapshot():
         try:
             pool = ak.stock_zh_a_spot_em()
             if pool is not None and len(pool) > 100:
+                pool = pool[~pool['代码'].astype(str).str.startswith(('688', '689', '300', '301'))]
                 _pool_cache['data'] = pool; _pool_cache['time'] = _time.time()
                 return pool
         except Exception:
@@ -318,6 +634,7 @@ def _get_pool_snapshot():
             result["最新价"] = big_df.get("trade", 0)
             result["涨跌幅"] = big_df.get("changepercent", 0)
             result["总市值"] = big_df.get("mktcap", 1e6) * 1e4  # Sina returns 万元 -> 元
+            result = result[~result['代码'].astype(str).str.startswith(('688', '689', '300', '301'))]
             _pool_cache['data'] = result; _pool_cache['time'] = _time.time()
             return result
 
@@ -332,6 +649,7 @@ def _get_pool_snapshot():
                 if "总市值" not in pool.columns:
                     pool["总市值"] = 1e12
                 pool["代码"] = pool["代码"].astype(str).str.replace(r'^(sh|sz|bj)', '', regex=True)
+                pool = pool[~pool['代码'].astype(str).str.startswith(('688', '689', '300', '301'))]
                 _pool_cache['data'] = pool; _pool_cache['time'] = _time.time()
                 return pool
         except Exception:
@@ -400,16 +718,59 @@ def _compute_factor_value(fname, meta, closes, opens, highs, lows, volumes, retu
         return 0.0
 
     if formula is not None:
+        # 预计算常用技术指标，供formula eval使用
+        ma5 = closes.rolling(5).mean()
+        ma10 = closes.rolling(10).mean()
+        ma20 = closes.rolling(20).mean()
+        ma60 = closes.rolling(60).mean() if len(closes) >= 60 else ma20
+        # 布林带
+        rm = closes.rolling(20).mean()
+        rs = closes.rolling(20).std()
+        upper = rm + 2 * rs
+        lower = rm - 2 * rs
+        # True Range (ATR用)
+        tr = pd.concat([
+            highs - lows,
+            (highs - closes.shift(1)).abs(),
+            (lows - closes.shift(1)).abs()
+        ], axis=1).max(axis=1)
+        # KDJ
+        lowest = lows.rolling(9).min()
+        highest = highs.rolling(9).max()
+        rsv = (closes - lowest) / (highest - lowest).replace(0, np.nan) * 100
+        k_line = rsv.ewm(com=2).mean()
+        d_line = k_line.ewm(com=2).mean()
+        j_line = 3 * k_line - 2 * d_line
+
+        # 辅助函数（闭包自动捕获上面的 closes/volumes 等变量）
+        def _rsi(period=14):
+            delta = closes.diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = -delta.where(delta < 0, 0.0)
+            avg_g = gain.rolling(period).mean()
+            avg_l = loss.rolling(period).mean()
+            rs = avg_g / avg_l.replace(0, np.nan)
+            return 100 - (100 / (1 + rs))
+
+        def _ema(period):
+            return closes.ewm(span=period, adjust=False).mean()
+
         local_vars = {
             'close': closes, 'open': opens, 'high': highs, 'low': lows,
-            'volume': volumes, 'returns': returns, 'np': np, 'pd': pd
+            'volume': volumes, 'returns': returns,
+            'ma5': ma5, 'ma10': ma10, 'ma20': ma20, 'ma60': ma60,
+            'upper': upper, 'lower': lower, 'rm': rm, 'rs_std': rs,
+            'tr': tr,
+            'k': k_line, 'd': d_line, 'j': j_line,
+            'rsi': _rsi, 'ema': _ema,
+            'np': np, 'pd': pd
         }
         try:
             result = eval(formula, {"__builtins__": {}}, local_vars)
             if isinstance(result, pd.Series):
                 return float(result.iloc[-1])
             return float(result)
-        except:
+        except Exception:
             return None
 
     return None
@@ -489,7 +850,14 @@ def get_global_news_cached():
 
 
 def is_trading_day():
-    """判断今天是否为交易日（简化版：周一至周五且非长假）"""
+    """判断今天是否为交易日（优先wudao，回退原逻辑）"""
+    try:
+        from wudao_client import trading_calendar
+        r = trading_calendar()
+        if r and ('交易日' in str(r) or '是' in str(r)):
+            return '不是' not in str(r)
+    except Exception:
+        pass
     wd = datetime.datetime.now().weekday()
     if wd >= 5:
         return False
@@ -525,6 +893,90 @@ def refresh_all_daily_data():
     return refreshed
 
 
+def batch_get_stock_info(codes):
+    """批量获取股票基本面（用wudao valuation_snapshot，最多20只/次）"""
+    try:
+        from wudao_client import valuation_snapshot as wudao_val
+        result = wudao_val(codes[:20])
+        if result:
+            sc = result.get('structuredContent') or {}
+            items = sc.get('data', {}).get('items', [])
+            for item in items:
+                stock = item.get('stock', {})
+                code = stock.get('code', '')
+                if not code:
+                    continue
+                info = {
+                    '市盈率-动态': item.get('peTtm', 0),
+                    '市净率': item.get('pb', 0),
+                    '总市值': item.get('totalMv', 0),
+                    '量比': item.get('volumeRatio', 1),
+                    '换手率': item.get('turnoverRate', 0),
+                    '股息率': item.get('dvTtm', 0),
+                }
+                _cache_set(_info_cache, code, info)
+        return True
+    except Exception as e:
+        logger.debug(f'batch_get_stock_info: {e}')
+        return False
+
+
+def batch_get_capital_flow(codes, max_codes=20):
+    """批量获取资金流向（wudao capital_flow，最多20只/次）"""
+    try:
+        from wudao_client import capital_flow as wudao_flow
+        result = wudao_flow(codes[:max_codes])
+        if result:
+            sc = result.get('structuredContent') or {}
+            items = sc.get('data', {}).get('items', [])
+            for item in items:
+                stock = item.get('stock', {})
+                code = stock.get('code', '')
+                if not code:
+                    continue
+                flows = item.get('flows', [])
+                if flows:
+                    latest = flows[-1]
+                    info = _cache_get(_info_cache, code, 1) or {}
+                    info.update({
+                        '主力净流入': latest.get('mainForce', 0),
+                        '超大单净流入': latest.get('superLarge', 0),
+                        '大单净流入': latest.get('large', 0),
+                    })
+                    _cache_set(_info_cache, code, info)
+        return True
+    except Exception as e:
+        logger.debug(f'batch_get_capital_flow: {e}')
+        return False
+
+
+def batch_get_auction_data(codes, trade_date=None):
+    """批量获取集合竞价数据（wudao auction_data）"""
+    from datetime import date
+    d = trade_date or date.today().strftime('%Y%m%d')
+    try:
+        from wudao_client import auction_data as wudao_auction
+        result = wudao_auction(codes, d)
+        if result:
+            sc = result.get('structuredContent') or {}
+            rows = sc.get('data', {}).get('rows', [])
+            result_dict = {}
+            for item in rows:
+                stock = item.get('stock', {})
+                code = stock.get('code', '')
+                if code:
+                    result_dict[code] = {
+                        'auction_chg': float(item.get('auctionChg', 0)),
+                        'auction_amount': float(item.get('auctionAmount', 0)),
+                        'auction_volume_ratio': float(item.get('auctionVolumeRatio', 0)),
+                        'auction_turnover_rate': float(item.get('auctionTurnoverRate', 0)),
+                    }
+            return result_dict
+    except Exception as e:
+        logger.debug(f'batch_get_auction_data: {e}')
+    return {}
+
+
 def batch_warm_cache(codes, days=60, max_workers=16):
     """批量预热日线缓存：并行获取多只股票的日线数据，填满SQLite缓存"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -550,16 +1002,71 @@ def batch_warm_cache(codes, days=60, max_workers=16):
     if not uncached:
         return {'warmed': 0, 'failed': 0, 'already_cached': already, 'total': total}
 
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futures = {ex.submit(get_stock_daily_cached, c, days): c for c in uncached}
-        for fut in as_completed(futures):
-            try:
-                df = fut.result()
-                if df is not None and len(df) >= days:
-                    warmed += 1
-                else:
-                    failed += 1
-            except:
-                failed += 1
+    # 先用wudao批量获取（最多20只/次，省调用次数）
+    wudao_warmed = 0
+    try:
+        from wudao_client import kline as wudao_kline
+        batch_size = 20
+        for i in range(0, len(uncached), batch_size):
+            batch = uncached[i:i + batch_size]
+            result = wudao_kline(batch, days)
+            if result and result.get('content'):
+                sc = result.get('structuredContent') or {}
+                items = []
+                if sc.get('data', {}).get('batch'):
+                    items = sc['data'].get('items', [])
+                if items:
+                    for item in items:
+                        stock_code = item.get('stock', {}).get('code', '')
+                        if not stock_code:
+                            continue
+                        klines = item.get('rows', [])
+                        if not klines or len(klines) < days * 0.5:
+                            continue
+                        rows = []
+                        for k in klines:
+                            rows.append({
+                                'date': str(k.get('date', k.get('day', ''))).replace('-', ''),
+                                'open': float(k.get('open', 0)),
+                                'close': float(k.get('close', 0)),
+                                'high': float(k.get('high', 0)),
+                                'low': float(k.get('low', 0)),
+                                'volume': float(k.get('volume', 0)),
+                            })
+                        if not rows:
+                            continue
+                        df = pd.DataFrame(rows).tail(days)
+                        conn = sqlite3.connect(DB_PATH)
+                        for _, row in df.iterrows():
+                            try:
+                                conn.execute(
+                                    "INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                                    (stock_code, str(row['date']), float(row['open']),
+                                     float(row['close']), float(row['high']),
+                                     float(row['low']), float(row['volume'])))
+                            except: pass
+                        conn.commit()
+                        conn.close()
+                        wudao_warmed += 1
+            logger.info(f'batch_warm_cache(wudao): {wudao_warmed}/{len(uncached)}')
+    except Exception as e:
+        logger.debug(f'batch_warm_cache(wudao): {e}')
 
-    return {'warmed': warmed, 'failed': failed, 'already_cached': already, 'total': total}
+    # 剩余未缓存的用传统方式补齐
+    remaining = [c for c in uncached if c not in
+                 {r[0] for r in sqlite3.connect(DB_PATH).execute(
+                     "SELECT code FROM daily_data GROUP BY code HAVING COUNT(*) >= ?", (days,)).fetchall()}]
+    if remaining:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(get_stock_daily_cached, c, days): c for c in remaining}
+            for fut in as_completed(futures):
+                try:
+                    df = fut.result()
+                    if df is not None and len(df) >= days:
+                        warmed += 1
+                    else:
+                        failed += 1
+                except:
+                    failed += 1
+
+    return {'warmed': warmed + wudao_warmed, 'failed': failed, 'already_cached': already, 'total': total}
