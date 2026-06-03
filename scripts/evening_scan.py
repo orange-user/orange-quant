@@ -65,9 +65,12 @@ def main():
         sector = sector_map.get(code, '')
         # 检查是否在热门板块中
         in_hot = sector and any(s['name'] == sector for s in hot_sectors)
+        # 从detail获取D1日期
+        d1_date = detail.get('d1_date', '?')
         entry = {
             'code': code,
             'score': score,
+            'd1_date': str(d1_date)[:8],
             'd1_open': detail['d1_open'],
             'd1_close': detail['d1_close'],
             'd1_chg': detail['d1_chg'],
@@ -80,7 +83,8 @@ def main():
         marker = '🔥' if score >= 70 else '⭐' if score >= 50 else '✓'
         sector_tag = f' [{sector}]' if sector else ''
         hot_tag = ' 🔥热门板块' if in_hot else ''
-        print(f'  {marker} {code}{sector_tag}: 昨涨{detail["d1_chg"]}% 放量{detail["d1_volume_ratio"]}x '
+        d1_date = detail.get('d1_date', '??')[:8]
+        print(f'  {marker} {code}{sector_tag}: D1日期{d1_date} 昨涨{detail["d1_chg"]}% 放量{detail["d1_volume_ratio"]}x '
               f'开{detail["d1_open"]}→收{detail["d1_close"]} 分{score}{hot_tag}')
 
     with open(WATCH_FILE, 'w') as f:

@@ -213,6 +213,7 @@ def detect_d1_setup(df):
     score = min(85, int(30 + d1_chg * 3 + (close_pos - 0.6) * 50))
     return {
         'found': True, 'score': score,
+        'd1_date': str(d1['date'])[:8] if not hasattr(d1['date'], 'strftime') else d1['date'].strftime('%Y%m%d'),
         'd1_open': round(d1['open'], 2), 'd1_close': round(d1['close'], 2),
         'd1_chg': round(d1_chg, 1), 'd1_volume_ratio': round(vr, 2),
     }
@@ -253,16 +254,32 @@ def scan_d1_candidates(max_stocks=500):
         if df is None or len(df) < 25:
             continue
         try:
-            # 验证缓存新鲜度：最新K线必须是3个交易日内
+            # 检查最新K线日期，必须是今天或昨天
             latest_date = df['date'].iloc[-1]
             if isinstance(latest_date, str):
-                latest_date = _dt.datetime.strptime(str(latest_date)[:8], '%Y%m%d').date()
+                latest_dt = _dt.datetime.strptime(str(latest_date)[:8], '%Y%m%d').date()
             elif hasattr(latest_date, 'date'):
-                latest_date = latest_date.date()
+                latest_dt = latest_date.date()
             else:
-                latest_date = _dt.datetime.strptime(str(latest_date)[:10].replace('-','')[:8], '%Y%m%d').date()
-            if (today - latest_date).days > 3:
-                continue  # 缓存太旧，跳过
+                latest_dt = _dt.datetime.strptime(str(latest_date)[:10].replace('-','')[:8], '%Y%m%d').date()
+
+            # 缓存超过1天 → 尝试刷新
+            if (today - latest_dt).days > 1:
+                try:
+                    from data import get_stock_daily_cached
+                    get_stock_daily_cached(code, days=60, force_refresh=True)
+                    df = load_stock_data(code)
+                    if df is not None and len(df) >= 25:
+                        latest_date = df['date'].iloc[-1]
+                        if isinstance(latest_date, str):
+                            latest_dt = _dt.datetime.strptime(str(latest_date)[:8], '%Y%m%d').date()
+                        elif hasattr(latest_date, 'date'):
+                            latest_dt = latest_date.date()
+                except:
+                    pass
+                # 刷新后再检查，还是旧数据就跳过
+                if (today - latest_dt).days > 1:
+                    continue
 
             r = detect_d1_setup(df)
             if r['found'] and r['score'] >= 25:
