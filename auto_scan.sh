@@ -26,7 +26,9 @@ if os.path.exists(D1):
     if d1:
         push_parts.append("📊 D1观察池：" + str(len(d1)) + "只")
         for s in d1[:5]:
-            push_parts.append("  " + s["code"] + " " + str(s["score"]) + "分 D1涨" + format(s["d1_chg"], "+.1f") + "% 量比" + str(s["d1_volume_ratio"]))
+            hot_tag = " 🔥" if s.get("sector_hot", False) else ""
+            sector_tag = " [" + s.get("sector", "") + "]" if s.get("sector", "") else ""
+            push_parts.append("  " + s["code"] + sector_tag + " " + str(s["score"]) + "分 D1涨" + format(s["d1_chg"], "+.1f") + "% 量比" + str(s["d1_volume_ratio"]) + hot_tag)
         push_parts.append("")
 
 # D2买入信号
@@ -56,6 +58,30 @@ if os.path.exists(POS):
         push_parts.append("💼 持仓 " + str(len(pos)) + "只")
         for p in pos:
             push_parts.append("  " + p.get("name", "?") + "(" + p["code"] + ") 买入" + str(p.get("buy_price", "?")) + " " + str(p.get("shares", 0)) + "股")
+
+# 板块热度
+try:
+    sys.path.insert(0, "/opt/quant_pulse")
+    from _sector_heat import get_hot_concepts
+    hot = get_hot_concepts(top_n=5)
+    if hot:
+        push_parts.append("")
+        push_parts.append("📊 热门板块 TOP5")
+        for s in hot:
+            push_parts.append("  " + s["name"] + " " + format(s["change_pct"], "+.2f") + "% 涨" + str(s["up_count"]) + "跌" + str(s["down_count"]))
+except:
+    pass
+
+# 悟道剩余次数
+try:
+    sys.path.insert(0, "/opt/quant_pulse")
+    from wudao_client import get_remaining_calls
+    rem = get_remaining_calls()
+    if rem < 15:
+        push_parts.append("")
+        push_parts.append("⚠️ 悟道剩余仅" + str(rem) + "次")
+except:
+    pass
 
 out = "\n".join(push_parts).strip()
 print(out if out else "暂无信号")

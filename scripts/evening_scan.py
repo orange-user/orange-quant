@@ -27,7 +27,7 @@ def main():
         hot_codes = pool[pool['涨跌幅'].abs() > 3]['代码'].tolist()
         print(f'  涨跌幅>3%: {len(hot_codes)}只，确保K线缓存...')
         n_fetched = 0
-        for code in hot_codes[:50]:  # 最多50只（留余量给悟道日限）
+        for code in hot_codes[:20]:  # 最多20只（留余量给悟道日限50次）
             df = get_stock_daily_cached(code, days=60, force_refresh=True)
             if df is not None:
                 n_fetched += 1
@@ -39,12 +39,12 @@ def main():
     print('\n获取板块热度排行...')
     hot_sectors = []
     try:
-        from _sector_heat import get_today_hot_sectors
-        hot_sectors = get_today_hot_sectors(top_n=10)
+        from _sector_heat import get_hot_concepts
+        hot_sectors = get_hot_concepts(top_n=10)
         if hot_sectors:
             print(f'  √ 热门板块 TOP{len(hot_sectors)}:')
             for s in hot_sectors[:5]:
-                print(f'    {s["name"]} 热度{s.get("heat",0)}')
+                print(f'    {s["name"]} {s["change_pct"]:+.2f}% (涨{s["up_count"]}跌{s["down_count"]})')
     except Exception as e:
         print(f'  ! 板块热度获取失败: {e}')
 
