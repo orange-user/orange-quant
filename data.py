@@ -155,17 +155,35 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
 
     try:
         df = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
-        if len(df) < days:
+        if df is None or len(df) < days:
             return None
         df = df.tail(days).copy()
-        df.columns = ['date', 'open', 'close', 'high', 'low', 'volume']
-        df['date'] = df['date'].astype(str)
+        # akshare列名可能变动，按位置映射
+        col_map = {'日期':'date','开盘':'open','收盘':'close','最高':'high','最低':'low','成交量':'volume',
+                   'Date':'date','Open':'open','Close':'close','High':'high','Low':'low','Volume':'volume',
+                   'date':'date','open':'open','close':'close','high':'high','low':'low','volume':'volume'}
+        rename = {}
+        for c in df.columns:
+            if c in col_map:
+                rename[c] = col_map[c]
+        df = df.rename(columns=rename)
+        # 只取需要的列
+        needed = ['date','open','close','high','low','volume']
+        have = [c for c in needed if c in df.columns]
+        if len(have) < 4:
+            logger.warning(f'akshare({code}): 列不匹配 {list(df.columns)}')
+            return None
+        df = df[have]
+        if 'date' in df.columns:
+            df['date'] = df['date'].astype(str)
+        else:
+            return None
         conn = sqlite3.connect(DB_PATH)
         for _, row in df.iterrows():
             try:
                 conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
-                             (code, str(row['date']), float(row['open']), float(row['close']),
-                              float(row['high']), float(row['low']), float(row['volume'])))
+                             (code, str(row['date']), float(row.get('open',0)), float(row.get('close',0)),
+                              float(row.get('high',0)), float(row.get('low',0)), float(row.get('volume',0))))
             except:
                 pass
         conn.commit()
@@ -174,11 +192,10 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
         df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
         df['ma5'] = df['close'].rolling(5).mean()
         df['ma20'] = df['close'].rolling(20).mean()
-        # 保存到CSV缓存
         _csv_cache_save(code, df)
         return df[['date','open','close','high','low','volume','returns','volume_ratio','ma5','ma20']].dropna()
     except Exception as e:
-        logger.warning(f'get_stock_daily_cached({code}): primary fetch failed: {e}')
+        logger.warning(f'get_stock_daily_cached({code}): akshare failed: {e}')
 
     # Fallback: CSV缓存 (akshare失败时读本地)
     try:
