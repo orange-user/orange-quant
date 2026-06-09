@@ -512,7 +512,7 @@ def simulate_past_signals():
         d1_row = df[df['date_str'] == d1_date]
         if len(d1_row) == 0:
             continue
-        entry_price = float(d1_row.iloc[0]['open'])
+        entry_price = float(d1_row.iloc[0]['open'])  # D+1开盘买
         dates2 = df[df['date_str'] > d1_date]['date_str'].unique()
         if len(dates2) == 0:
             continue
@@ -520,8 +520,11 @@ def simulate_past_signals():
         d2_row = df[df['date_str'] == d2_date]
         if len(d2_row) == 0:
             continue
-        exit_price = float(d2_row.iloc[0]['open'])
+        exit_price = float(d2_row.iloc[0]['close'])  # D+2收盘卖（优化: B_open_close）
         gross_return = (exit_price / entry_price - 1) * 100
+        # 止损: 单笔亏损>7%直接按-7%算（实际会盘中触发止损）
+        if gross_return < -7:
+            gross_return = -7
         cost_pct = 0.2 + 0.05
         net_return = gross_return - cost_pct
         shares = 100
