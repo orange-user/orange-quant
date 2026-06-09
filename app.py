@@ -99,25 +99,65 @@ def _start_scheduler():
 
 _start_scheduler()
 
+def _start_og_scheduler():
+    """后台线程：每日18:00跑橙卫AI信号"""
+    def _loop():
+        while True:
+            now = datetime.now()
+            target = now.replace(hour=18, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            wait = (target - now).total_seconds()
+            time.sleep(wait)
+            try:
+                from scripts.daily_og import run_daily
+                run_daily(do_push=False)
+                logger.info("[OG] 每日信号已生成")
+            except Exception as e:
+                logger.error(f"[OG] 信号生成失败: {e}")
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+
+
+    """后台线程：每日18:00跑橙卫AI信号"""
+    def _loop():
+        while True:
+            now = datetime.now()
+            target = now.replace(hour=18, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            wait = (target - now).total_seconds()
+            time.sleep(wait)
+            try:
+                from scripts.daily_og import run_daily
+                run_daily(do_push=False)
+                logger.info("[OG] 每日信号已生成")
+            except Exception as e:
+                logger.error(f"[OG] 信号生成失败: {e}")
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+
+_start_og_scheduler()
+
 # ========== Ruflo MCP Server ==========
 def _start_ruflo():
+    """静默启动Ruflo MCP（不输出错误）"""
     import socket
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2)
         s.connect(('127.0.0.1', 3000))
         s.close()
-        print('[Ruflo] MCP server already on port 3000')
         return
-    except: pass
-    finally: s.close()
+    except:
+        pass
     try:
-        proc = subprocess.Popen(
+        subprocess.Popen(
             ['ruflo', 'mcp', 'start', '-t', 'http', '-p', '3000'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        print(f'[Ruflo] Started MCP server (PID {proc.pid})')
-    except Exception as e:
-        print(f'[Ruflo] Failed: {e}')
+    except:
+        pass
 
 _start_ruflo()
 
@@ -2345,32 +2385,32 @@ def deploy_api():
 @app.route('/api/alpha/signals')
 def api_alpha_signals():
     """AI模型信号"""
-    import pickle, os
-    from config import DATA_DIR
-    model_path = os.path.join(DATA_DIR, 'alpha_model.pkl')
-    if os.path.exists(model_path):
-        with open(model_path, 'rb') as f:
-            model_data = pickle.load(f)
-        from alpha_factory import fetch_lhb, fetch_zt_pool, build_features, predict_today
-        lhb = fetch_lhb(10)
-        zt = fetch_zt_pool()
-        features = build_features(lhb, zt)
-        signals = predict_today(model_data, features)
-        return jsonify({'signals': signals, 'count': len(signals), 'accuracy': model_data.get('accuracy', 0)})
-    return jsonify({'signals': [], 'count': 0, 'error': '模型未训练'})
+    from scripts.daily_og import load_model, fetch_lhb_data, build_features, filter_today_signals
+    model_data = load_model()
+    if model_data is None:
+        return jsonify({'signals': [], 'count': 0, 'error': '模型未训练'})
+    lhb = fetch_lhb_data(10)
+    if lhb is None:
+        return jsonify({'signals': [], 'count': 0, 'error': '数据获取失败'})
+    features = build_features(lhb)
+    if features is None or len(features) == 0:
+        return jsonify({'signals': [], 'count': 0, 'error': '特征构建失败'})
+    signals = filter_today_signals(features, model_data)
+    return jsonify({'signals': signals, 'count': len(signals), 'accuracy': model_data.get('accuracy', 0)})
 
 @app.route('/api/alpha/train')
 def api_alpha_train():
-    """训练模型"""
-    result = run_pipeline(90)
-    if 'error' in result:
-        return jsonify({'status': 'error', 'msg': result['error']})
-    m = result['model']
+    """训练XGBoost模型"""
+    from scripts.daily_og import train_new_model
+    result = train_new_model(180)
+    if result is None:
+        return jsonify({'status': 'error', 'msg': '训练失败'})
     return jsonify({
         'status': 'ok',
-        'accuracy': m.get('accuracy', 0),
-        'n_train': m.get('n_train', 0),
-        'signals': result.get('signals', [])[:5],
+        'accuracy': result.get('accuracy', 0),
+        'accuracy_std': result.get('accuracy_std', 0),
+        'trained_date': result.get('trained_date', ''),
+        'signals': [],  # 训练后不直接出信号
     })
 
 
@@ -2425,9 +2465,15 @@ def og_dashboard():
 @app.route('/og/signals')
 def og_signals():
     """今日信号 (纯文本, 适合微信)"""
-    from scripts.daily_og import fetch_signals, load_model
+    from scripts.daily_og import load_model, fetch_lhb_data, build_features, filter_today_signals
     model_data = load_model()
-    signals = fetch_signals(model_data)
+    if model_data is None:
+        return jsonify({'signals': [], 'text': '模型未训练'})
+    lhb = fetch_lhb_data(10)
+    if lhb is None:
+        return jsonify({'signals': [], 'text': '数据获取失败'})
+    features = build_features(lhb)
+    signals = filter_today_signals(features, model_data)
     if signals:
         lines = [f"{s['code']} {s['name']} {s['proba']:.0%} 净买{s['nb_ratio']}%" for s in signals]
         return jsonify({'signals': signals, 'text': chr(10).join(lines)})

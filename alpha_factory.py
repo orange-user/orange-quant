@@ -106,6 +106,8 @@ def build_features(lhb_df: pd.DataFrame) -> pd.DataFrame:
             'net_buy_amount_log': net_buy_amount_log,
             'buy_sell_ratio': buy_sell_ratio,
             'turnover_log': turnover_log,
+            'turnover': turnover_rate,      # 原始换手率
+            'close_price': close_price,     # 收盘价
 
             # 标签：上榜后1日 - 滑点（保守估计）
             'label_d1': float(row.get('上榜后1日', np.nan)),
@@ -254,7 +256,7 @@ def predict_today(model_info: dict, features_df: pd.DataFrame) -> List[Dict]:
             'name': r['name'],
             'probability': round(float(r['predict_proba']), 3),
             'net_buy_ratio': round(float(r['net_buy_ratio']), 2),
-            'turnover': round(float(r.get('turnover_rate', 0)), 2),
+            'turnover': round(float(r.get('turnover', 0)), 2),
             'close_price': round(float(r.get('close_price', 0)), 2),
             'date': str(r.get('date', '')),
         })
