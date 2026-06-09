@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Vue 测试</title>
+</head>
+<body>
+  <div id="app">
+    <h1>[[ message ]]</h1>
+    <p>计数: [[ count ]]</p>
+    <button @click="count++">+1</button>
+  </div>
+  <script src="/static/js/lib/vue.global.prod.js"></script>
+  <script>
+    const { createApp, ref } = Vue;
+    createApp({
+      delimiters: ['[[', ']]'],
+      setup() {
+        const message = ref('Vue 加载成功！');
+        const count = ref(0);
+        return { message, count };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

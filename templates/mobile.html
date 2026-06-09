@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>橘子量化 · 手机版</title>
+  <title>Pulse Orange · 手机版</title>
   <meta name="theme-color" content="#FFFFFF">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="manifest" href="/static/manifest.json">
-  <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.21/vue.global.prod.min.js"></script>
-  <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+  <script src="/static/js/lib/vue.global.prod.js"></script>
+  <script src="/static/js/lib/echarts.min.js"></script>
   <link rel="stylesheet" href="/static/css/mobile.css">
 </head>
 <body>
@@ -19,7 +19,7 @@
       <div class="flex items-center justify-between" style="height:48px;">
         <div class="flex items-center gap-1" style="min-width:0;">
           <span style="color:var(--text);font-weight:800;font-size:16px;white-space:nowrap;">
-            <span style="color:var(--amber);margin-right:2px;">&diams;</span>橘子量化
+            <span style="color:var(--amber);margin-right:2px;">&diams;</span>Pulse Orange
           </span>
           <span style="color:var(--text-label);font-size:10px;letter-spacing:1px;white-space:nowrap;">尾盘买入</span>
         </div>
@@ -52,6 +52,10 @@
           <div class="text-xs text-sub mt-1">[[ progress.msg ]]</div>
         </div>
         <div v-if="message" class="alert alert-info mb-2">[[ message ]]</div>
+        <div v-if="stocks.length && status==='ok'" class="flex gap-2 mb-2" style="justify-content:space-between;">
+          <button @click="copyTop3" style="flex:1;background:var(--green);color:#fff;border:none;border-radius:6px;padding:8px 12px;font-size:13px;font-weight:600;">📋 复制TOP3</button>
+          <a href="https://t.zsxq.com/mHlDz" target="_blank" style="flex:1;background:var(--amber);color:#000;border:none;border-radius:6px;padding:8px 12px;font-size:13px;font-weight:600;text-decoration:none;text-align:center;">🌐 知识星球</a>
+        </div>
         <div v-if="stocks.length && status==='ok'">
           <div v-for="(s,i) in stocks" :key="s.code" class="card stock-result-card">
             <div class="flex items-start justify-between mb-1">
@@ -178,6 +182,6 @@
       </div>
     </div>
   </div>
-  <script src="/static/js/mobile.js"></script>
+  <script src="/static/js/mobile.js?v=20260526"></script>
 </body>
 </html>

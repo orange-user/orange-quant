@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import pickle
 import numpy as np
 import pandas as pd
 import akshare as ak
@@ -1227,6 +1228,234 @@ def detect_overheat_risk(closes, highs, lows, opens, rsi_val):
             reasons.append(f'近5日{overbought_days}天RSI>65(扣5)')
 
     return min(30, risk), reasons
+
+
+# ==================== T+1预测加分 (基于192k日线横截面分析) ====================
+
+def _calc_t1_bonus(today_chg, rsi, vol_ratio, mom5, dist_ma20):
+    """基于192k条日线横截面分析的T+1预测加分(0-20分)
+
+    已验证的最佳组合（全市场124,586有效样本）:
+    - 涨幅4-6% + RSI<40 + 贴近MA20 → 76.6% 胜率 (n=197)
+    - 涨幅4-6% + RSI<40 → 62.2% (n=725)
+    - 涨幅0-4% + RSI<40 → 57.2% (n=13,814)
+
+    限制最高20分避免尾部风险（输家亏损>赢家盈利的问题）
+    """
+    # 排除高风险：5日动量过高（追涨）或量比过高（异常放量）
+    if mom5 > 15 or vol_ratio > 4.0:
+        return 0, []
+
+    bonus = 0
+    reasons = []
+
+    # === 核心组合 (基于横截面数据验证) ===
+    if 4 <= today_chg <= 6 and rsi < 40 and abs(dist_ma20) < 3:
+        bonus += 12
+        reasons.append("黄金组合:涨4-6%+RSI超卖+贴MA20(+12)")
+    elif 4 <= today_chg <= 6 and rsi < 40:
+        bonus += 8
+        reasons.append("涨4-6%+RSI超卖(+8)")
+    elif 4 <= today_chg <= 6 and abs(dist_ma20) < 3:
+        bonus += 6
+        reasons.append("涨4-6%+贴MA20(+6)")
+    elif 0 <= today_chg <= 4 and rsi < 40:
+        bonus += 5
+        reasons.append("涨0-4%+RSI超卖(+5)")
+    elif 0 <= today_chg <= 6:
+        bonus += 3
+        reasons.append("涨幅0-6%(+3)")
+
+    # === 辅助加分项 ===
+    if 2.5 <= vol_ratio <= 4.0:
+        bonus += 3
+        reasons.append("量比2.5-4.0(+3)")
+    if rsi < 30:
+        bonus += 2
+        reasons.append("RSI<30超卖(+2)")
+    if 0 <= mom5 <= 10:
+        bonus += 2
+        reasons.append("动量健康(+2)")
+
+    return min(bonus, 20), reasons
+
+
+# ==================== PM 风控模型 ====================
+_PM_MODEL = None
+
+def _pm_risk_filter(code, df):
+    """条件概率矩阵风控过滤器
+    
+    基于均值回归信号，计算仓位缩放系数 (0.3~1.0)。
+    """
+    global _PM_MODEL
+    
+    if df is None or len(df) < 30:
+        return 1.0
+    
+    # 加载模型（进程内缓存）
+    if _PM_MODEL is None:
+        model_path = os.path.join('data', 'pm_risk_model.pkl')
+        if os.path.exists(model_path):
+            try:
+                with open(model_path, 'rb') as f:
+                    _PM_MODEL = pickle.load(f)
+            except Exception:
+                return 1.0
+        else:
+            return 1.0
+    
+    model = _PM_MODEL
+    features = model['features']
+    bin_edges = model['bin_edges']
+    pm = model['pm']
+    
+    # 计算 3 个因子
+    closes = df['close']
+    highs = df['high']
+    lows = df['low']
+    opens = df['open']
+    
+    # rsi_14
+    delta = closes.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_g = gain.rolling(14).mean().iloc[-1]
+    avg_l = loss.rolling(14).mean().iloc[-1]
+    rsi_14 = float(100 - (100 / (1 + avg_g/avg_l))) if avg_l > 0 else 50.0
+    
+    # macd_dif
+    ema12 = closes.ewm(span=12).mean().iloc[-1]
+    ema26 = closes.ewm(span=26).mean().iloc[-1]
+    macd_dif = float(ema12 - ema26)
+    
+    # kdj_j
+    low9 = float(lows.iloc[-9:].min()) if len(lows) >= 9 else 0
+    high9 = float(highs.iloc[-9:].max()) if len(highs) >= 9 else 1
+    rsv = 50.0
+    if high9 > low9:
+        rsv = (float(closes.iloc[-1]) - low9) / (high9 - low9) * 100
+    k = rsv
+    d = k
+    for i in range(-7, 0):
+        if abs(i) <= len(closes):
+            prev_c = float(closes.iloc[i])
+            prev_l = float(lows.iloc[i])
+            prev_h = float(highs.iloc[i])
+            prev_rsv = (prev_c - prev_l) / (prev_h - prev_l) * 100 if prev_h > prev_l else 50
+            k = 2/3 * k + 1/3 * prev_rsv
+            d = 2/3 * d + 1/3 * k
+    kdj_j = float(3 * k - 2 * d)
+    
+    # 构建一行数据
+    from probability_matrix_v7 import get_realtime_signal
+    latest = pd.Series({
+        'feat_limit_state': 0,
+        'macd_dif': macd_dif,
+        'rsi_14': rsi_14,
+        'kdj_j': kdj_j,
+    })
+    
+    signal_info = get_realtime_signal(latest, bin_edges, pm, features, min_count=50)
+    cell_stats = signal_info.get('stats', {})
+    cell_count = cell_stats.get('count', 0) if cell_stats else 0
+    cell_mean = cell_stats.get('mean_return', 0.0) if cell_stats else 0.0
+    
+    # PM格子加权：基于条件收益率的强权重调整
+    # 正收益格子 → 加权重 (最高1.5x)
+    # 负收益格子 → 禁止买入 (weight=0)
+    # 映射: +2%→1.50, 0%→1.0, -0.5%→0, -3%→0
+    if cell_count >= 50:
+        if cell_mean >= 0:
+            scale = min(1.5, 1.0 + cell_mean * 25)  # +2%→1.50
+        elif cell_mean > -0.005:
+            scale = 0.5  # 微亏，减半
+        else:
+            scale = 0.0  # mean_return < -0.5% → 禁止买入
+    else:
+        scale = 0.6  # 样本不足（count<50），默认中性
+    
+    # 大盘过滤器：双均线趋势择时
+    market_scale = 1.0
+    try:
+        idx_df = get_index_daily('sh000300', 60)
+        if idx_df is not None and len(idx_df) >= 30:
+            idx_close = idx_df['close']
+            ma10 = idx_close.rolling(10).mean().iloc[-1]
+            ma30 = idx_close.rolling(30).mean().iloc[-1]
+            if ma10 < ma30:
+                market_scale = 0.3  # 死叉(MA10<MA30) → 空头趋势，只留30%
+            # 连续加速下跌：3日累计跌超3%
+            recent3 = idx_close.tail(3)
+            if len(recent3) == 3:
+                drop = (recent3.iloc[-1] - recent3.iloc[0]) / recent3.iloc[0]
+                if drop < -0.03:
+                    market_scale = min(market_scale, 0.3)
+    except Exception:
+        pass
+    
+    # 波动率目标仓位
+    vol_scale = 1.0
+    try:
+        idx_v = get_index_daily('sh000300', 60)
+        if idx_v is not None and len(idx_v) >= 20:
+            ret_v = idx_v['returns'].dropna()
+            ann_vol = ret_v.tail(20).std() * (250 ** 0.5)
+            target_vol = 0.15  # 年化目标15%
+            vol_scale = min(1.0, max(0.3, target_vol / ann_vol)) if ann_vol > 0 else 1.0
+    except Exception:
+        pass
+    
+    # 北向资金因子
+    nb_scale = 1.0
+    try:
+        import akshare as ak
+        from datetime import datetime, timedelta
+        _nb_df = ak.stock_hsgt_hist_em(symbol='北向资金')
+        if _nb_df is not None and len(_nb_df) > 20:
+            _nb_flow = pd.to_numeric(_nb_df['当日成交净买额'], errors='coerce')
+            _nb_valid = _nb_df.dropna(subset=['当日成交净买额'])
+            if len(_nb_valid) > 0:
+                _last_dt = datetime.strptime(str(_nb_valid['日期'].iloc[-1]), '%Y-%m-%d')
+                if (datetime.now() - _last_dt).days <= 10:  # 数据在10日内才有效
+                    _net20 = _nb_flow.tail(20).sum()
+                    if _net20 > 500:
+                        nb_scale = 1.0
+                    elif _net20 > 0:
+                        nb_scale = 0.9
+                    elif _net20 > -300:
+                        nb_scale = 0.7
+                    else:
+                        nb_scale = 0.5
+    except Exception:
+        pass
+    
+    # 综合缩放
+    final_scale = scale * market_scale * vol_scale * nb_scale
+    
+    # 记录日志
+    try:
+        from config import DATA_DIR
+        import json, datetime
+        log_path = os.path.join(DATA_DIR, 'pm_scale_log.jsonl')
+        with open(log_path, 'a', encoding='utf-8') as _lf:
+            d = {'t': datetime.datetime.now().strftime('%Y%m%d_%H%M%S'),
+                 'code': code,
+                 'pm_signal': round(sig, 4),
+                 'pm_scale': scale,
+                 'market_scale': market_scale,
+                 'final_scale': final_scale,
+                 'cell': signal_info.get('cell_id', ''),
+                 'cell_count': signal_info.get('stats', {}).get('count', 0)}
+            if 'date' in df.columns and len(df) > 0:
+                d['last_date'] = str(df['date'].iloc[-1])
+            _lf.write(json.dumps(d, ensure_ascii=False) + chr(10))
+    except Exception:
+        pass
+    
+    return (final_scale, market_scale, vol_scale, nb_scale)
+
+
 def calculate_comprehensive_score(code):
     df = get_stock_daily_cached(code, 60)
     if df is None or len(df)<20: return None
@@ -1371,6 +1600,7 @@ def calculate_comprehensive_score(code):
     score += int(s_two_yang * 0.8)
     if s_two_yang>=10: reasons.append("两连阳加速")
 
+
     # ==== AL Brooks 策略分数 ====
     score += int(s_three_push * 0.8)
     if s_three_push >= 20: reasons.append("三推衰竭反转(强)")
@@ -1429,7 +1659,100 @@ def calculate_comprehensive_score(code):
         reasons.append("KDJ超买(扣15%)")
     if abs(r_val)>0.7: score = int(score*0.85); reasons.append("高相关性跟风(扣15%)")
 
+    # ==== 回测分析加/扣分 (126笔交易验证, 2026-06-01) ====
+    # 买入日涨幅分析
+    tod_chg = (closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100 if len(closes) >= 2 else 0
+    if 4 <= tod_chg <= 6:
+        score += 8; reasons.append(f"涨幅4-6%(+8)")
+    elif tod_chg > 6:
+        score -= 8; reasons.append(f"追高>6%(扣8)")
+    # MA5斜率
+    if len(closes) >= 10:
+        ma5_ser = closes.rolling(5).mean()
+        if ma5_ser.iloc[-5] > 0:
+            ma5_slope = (ma5_ser.iloc[-1] - ma5_ser.iloc[-5]) / ma5_ser.iloc[-5] * 100
+            if ma5_slope > 2.5:
+                score -= 6; reasons.append(f"MA5斜率{ma5_slope:.1f}>2.5(扣6)")
+            elif 1 <= ma5_slope <= 2:
+                score += 5; reasons.append(f"MA5斜率健康(+5)")
+    # 距MA20距离
+    if len(closes) >= 21:
+        ma20_ser = closes.rolling(20).mean()
+        d20 = (closes.iloc[-1] - ma20_ser.iloc[-1]) / ma20_ser.iloc[-1] * 100
+        if d20 > 6:
+            score -= 6; reasons.append(f"离MA20{d20:.1f}%>6%(扣6)")
+        elif d20 < 3:
+            score += 5; reasons.append(f"紧贴MA20<3%(+5)")
+    # 量比>3.0: 回测3笔全输(0%胜率)
+    if vol_ratio > 3.0:
+        score -= 12; reasons.append(f"量比{vol_ratio:.1f}>3.0异常(扣12)")
+    # K线形态
+    if 'high' in df.columns and 'low' in df.columns and 'open' in df.columns:
+        hi, lo, op, cl = highs.iloc[-1], lows.iloc[-1], opens.iloc[-1], closes.iloc[-1]
+        body = abs(cl - op)
+        tr = hi - lo
+        if tr > 0:
+            body_pct = body / tr * 100
+            upper_shadow = hi - max(cl, op)
+            lower_shadow = min(cl, op) - lo
+            lower_pct = lower_shadow / tr * 100
+            # 十字星: body<10%范围 → 胜率高(+150%差异)
+            if body < tr * 0.1:
+                score += 6; reasons.append("十字星形态(+6)")
+            # 冲高回落(阳线+上影线>实体50%): 反直觉, 胜率65%
+            if cl >= op and upper_shadow > body * 0.5:
+                score += 6; reasons.append("冲高回落(+6)")
+            # 下影线>30% → 有支撑
+            if lower_pct > 30:
+                score += 5; reasons.append(f"下影线{lower_pct:.0f}%(+5)")
+            # 实体>50% → 涨太多, 胜率仅42.6%
+            if body_pct > 50:
+                score -= 5; reasons.append(f"实体{body_pct:.0f}%过大(扣5)")
+    # 大盘涨>1%: 胜率60.6%
+    if idx_df is not None and len(idx_df) >= 2:
+        idx_ret = idx_df['returns'].iloc[-1]
+        if isinstance(idx_ret, (int, float)) and idx_ret > 0.01:
+            score += 6; reasons.append(f"大盘涨{idx_ret*100:.1f}%(+6)")
+
+    # ==== 遗传编程挖掘因子 (IC=0.058, p=0.000) ====
+    # 因子的核心是 -close_pos：收盘在当日K线低位→次日反弹概率高
+    if 'close_pos' in df.columns or 'close' in df.columns and 'high' in df.columns and 'low' in df.columns:
+        _cp = float((closes.iloc[-1] - lows.iloc[-1]) / (highs.iloc[-1] - lows.iloc[-1])) if (highs.iloc[-1] - lows.iloc[-1]) > 0 else 0.5
+        if _cp < 0.3:
+            score += 6; reasons.append(f"收盘低位{_cp:.0%}(+6)")
+            # 放量+收盘低位：最强组合(IC=0.058)
+            if vol_ratio > 1.0:
+                score += 4; reasons.append(f"放量+低位(+4)")
+            # 微涨+收盘低位：确认反弹开始
+            _td_chg = (closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100 if len(closes) >= 2 else 0
+            if 0 < _td_chg < 3:
+                score += 4; reasons.append(f"微涨+低位(+4)")
+
+    # ==== T+1预测加分 (基于192k日线横截面分析) ====
+    _t1_chg = (closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100 if len(closes) >= 2 else 0
+    _t1_ma20 = closes.rolling(20).mean().iloc[-1] if len(closes) >= 20 else closes.iloc[-1]
+    _t1_dist = (closes.iloc[-1] - _t1_ma20) / _t1_ma20 * 100 if _t1_ma20 > 0 else 0
+    t1_bonus, t1_reasons = _calc_t1_bonus(_t1_chg, rsi, vol_ratio, mom5, _t1_dist)
+    score += t1_bonus
+    reasons.extend(t1_reasons)
+
     score = _apply_dynamic_factors(code, df, score, reasons)
+
+    # ==== 多因子评分叠加（FACTOR_REGISTRY全部活跃因子） ====
+    score = _apply_factor_scores(code, score, reasons)
+
+    # ==== 多时间框架信号合成 ====
+    score = _mtf_bonus(code, df, score, reasons)
+
+    # ==== Kronos K线大模型预测 ====
+    try:
+        from kronos_integration import score_kronos_prediction
+        krono_bonus, krono_reason = score_kronos_prediction(code, df)
+        if krono_bonus != 0:
+            score = max(0, min(100, score + krono_bonus))
+            reasons.append(krono_reason)
+    except Exception:
+        pass
 
     # ==== AL Brooks 背景上下文调节器 ====
     if context_mult != 1.0:
@@ -1448,28 +1771,6 @@ def calculate_comprehensive_score(code):
     except Exception:
         position_pct = 30 if score>=80 else (20 if score>=65 else (10 if score>=50 else 5))
 
-    # CtaSignal 引擎二次评分 (新旧混合)
-    try:
-        from signal_engine import SignalEngine, BullTrendSignal, RsiSignal, VolumeSignal, \
-            MACrossSignal, ChanBreakSignal, BollChannelSignal, KDJOverboughtRisk, BollTopRisk, \
-            WeakTrendRisk, LowVolumeRisk
-        se = SignalEngine()
-        se.add_signal(MACrossSignal(weight=1.0))
-        se.add_signal(BullTrendSignal(weight=1.0))
-        se.add_signal(BollChannelSignal(weight=0.8))
-        se.add_signal(RsiSignal(weight=0.8))
-        se.add_signal(VolumeSignal(weight=0.5))
-        se.add_signal(ChanBreakSignal(weight=1.0))
-        se.add_risk(KDJOverboughtRisk())
-        se.add_risk(BollTopRisk())
-        se.add_risk(WeakTrendRisk())
-        se.add_risk(LowVolumeRisk())
-        se_result = se.evaluate(df)
-        # 新旧评分加权混合 (旧:新 = 6:4)
-        score = int(score * 0.6 + se_result['signal'] * 0.4)
-        reasons.append(f"新信号({se_result['signal']})")
-    except Exception:
-        pass
 
     # ==== Ruflo similarity bonus ====
     try:
@@ -1498,15 +1799,31 @@ def calculate_comprehensive_score(code):
     except Exception:
         pass
 
+    # ==== PM 风控模型（条件概率矩阵，均值回归信号） ====
+    try:
+        pm_scale, market_scale, vol_scale, nb_scale = _pm_risk_filter(code, df)
+        old_score = score
+        score = int(score * pm_scale)
+        delta = score - old_score
+        if delta < 0:
+            reasons.append(f'PM风控(×{pm_scale:.2f}, {delta})')
+    except Exception:
+        pass
+
     return {
         'code':code, 'name':'', 'price':0, 'change_pct':0,
-        'signal': min(round(score),100),
+        'signal': round(score),
         'rsi':round(rsi,2), 'adx':round(adx_val,2) if adx_val else 0,
         'macd_hist':round(macd_hist,4), 'macd_positive':int(macd_hist > 0),
         'kdj_k':round(k,2), 'kdj_j':round(j_val,2),
         'resid_z':round(resid_z,2), 'bb_position':round(bp,2),
         'momentum_5d':round(mom5,2), 'volume_ratio':round(vol_ratio,2),
         'priority_reason': ' + '.join(reasons[:4]) if reasons else '多因子共振',
+        'pm_scale': round(pm_scale, 2) if 'pm_scale' in dir() else 1.0,
+        'market_scale': round(market_scale, 2) if 'market_scale' in dir() else 1.0,
+        'vol_scale': round(vol_scale, 2) if 'vol_scale' in dir() else 1.0,
+        'nb_scale': round(nb_scale, 2) if 'nb_scale' in dir() else 1.0,
+        'buy_advice': f"{code}|{round(closes.iloc[-1],2)}|得分{round(score)}|缩放{round(globals().get("pm_scale") if "pm_scale" in dir() else 1,2)}",
         'position_advice': f"建议仓位{position_pct}%",
         'strategy_scores':{'均线金叉':s_ma,'缠论':s_chan,'波浪理论':s_wave,'多头趋势':s_bull,'热点题材':s_topic,'事件驱动':s_event,'成长质量':s_growth,'预期重估':s_reval,'蛟龙出海':s_dragon,'上山爬坡':s_climb,'布林突破':s_boll,'量价配合':s_vol_price,'三金叉共振':s_triple,'超跌反转':s_oversold,'动量突破':s_momentum,'低波突破':s_lowvol,'连阳蓄势':s_yang,'协整套利':s_coint,'回调买入':s_pullback,'DualThrust':s_dual_thrust,'KingKeltner':s_kk,'TopK':s_topk,'周几效应':s_weekday,'两连阳加速':s_two_yang,'信号K线质量':sbq_raw,'三推反转':s_three_push,'趋势高潮':s_climax},
         'basic_info': info, 'sectors': sectors,
@@ -1514,25 +1831,561 @@ def calculate_comprehensive_score(code):
     }
 
 
+def _calc_vwap(df):
+    """计算VWAP（成交量加权均价）"""
+    if 'volume' not in df.columns or len(df) < 2:
+        return None
+    tp = (df['high'] + df['low'] + df['close']) / 3
+    v = df['volume'].values
+    p = tp.values
+    cum_vp = np.cumsum(p * v)
+    cum_v = np.cumsum(v)
+    vwap = cum_vp / np.maximum(cum_v, 1e-8)
+    return float(vwap[-1]), float((df['close'].iloc[-1] - vwap[-1]) / vwap[-1] * 100)
+
+
+def _detect_intraday_pattern(tf_name, df):
+    """分钟级形态检测
+
+    返回 (signal_score, reasons)
+    signal_score: -2~2 的精细信号
+    """
+    if df is None or len(df) < 10:
+        return 0, []
+
+    closes = df['close'].values
+    opens = df['open'].values if 'open' in df else closes
+    highs = df['high'].values if 'high' in df else closes
+    lows = df['low'].values if 'low' in df else closes
+    volumes = df['volume'].values if 'volume' in df else np.ones(len(closes))
+    n = len(closes)
+    reasons = []
+    score = 0
+
+    # ── 1. MA趋势 ──
+    close_s = pd.Series(closes)
+    if n >= 20:
+        ma5 = close_s.rolling(5).mean().values
+        ma20 = close_s.rolling(20).mean().values
+        if np.isfinite(ma5[-1]) and np.isfinite(ma20[-1]):
+            if ma5[-1] > ma20[-1] and ma5[-3] > ma20[-3]:
+                score += 0.6  # 多头排列
+                reasons.append("MA多头")
+            elif ma5[-1] < ma20[-1] and ma5[-3] < ma20[-3]:
+                score -= 0.6  # 空头排列
+                reasons.append("MA空头")
+
+    # ── 2. RSI ──
+    rsi = compute_rsi(close_s, 14)
+    if np.isfinite(rsi):
+        if 40 <= rsi <= 60:
+            score += 0.3  # 中性偏健康
+        elif rsi > 70:
+            score -= 0.5  # 超买
+            reasons.append("RSI超买")
+        elif rsi < 30:
+            score += 0.4  # 超卖反弹机会
+            reasons.append("RSI超卖")
+
+    # ── 3. VWAP位置 ──
+    vwap_res = _calc_vwap(df)
+    if vwap_res is not None:
+        vwap_dev = vwap_res[1]
+        if vwap_dev > 0:
+            score += 0.3 if vwap_dev < 1 else 0.5
+        elif vwap_dev < -0.5:
+            score -= 0.4
+            reasons.append("VWAP下方")
+
+    # ── 4. 量价配合 ──
+    if n >= 5:
+        recent_vol = np.mean(volumes[-3:])
+        prev_vol = np.mean(volumes[-6:-3]) if n >= 6 else np.mean(volumes[:3])
+        vol_ratio = recent_vol / max(prev_vol, 1)
+        price_up = closes[-1] > closes[-3]
+        if vol_ratio > 1.5 and price_up:
+            score += 0.5
+            reasons.append("放量上涨")
+        elif vol_ratio > 1.5 and not price_up:
+            score -= 0.5
+            reasons.append("放量下跌")
+        elif vol_ratio < 0.6 and price_up:
+            score -= 0.3
+            reasons.append("缩量上涨(背离)")
+
+    # ── 5. K线形态（最后3根） ──
+    if n >= 3:
+        last3_close = closes[-3:]
+        last3_low = lows[-3:]
+        last3_high = highs[-3:]
+        # 逐渐走高的低点 → 积累
+        if last3_low[0] < last3_low[1] < last3_low[2] and last3_close[2] > last3_close[0]:
+            score += 0.5
+            reasons.append("低点上移")
+        # 逐渐走低的高点 → 派发
+        if last3_high[0] > last3_high[1] > last3_high[2] and last3_close[2] < last3_close[0]:
+            score -= 0.5
+            reasons.append("高点下移")
+
+    # ── 6. 60min专用：MACD趋势 ──
+    if tf_name == 'hour' and n >= 30:
+        macd_line, _, macd_hist = compute_macd(close_s)
+        if np.isfinite(macd_hist):
+            if macd_hist > 0 and macd_line > 0:
+                score += 0.5
+                reasons.append("MACD多头")
+            elif macd_hist < 0 and macd_line < 0:
+                score -= 0.5
+                reasons.append("MACD空头")
+
+    # ── 7. 5min专用：尾盘30分钟稳定性（收盘前最后6根5minK线） ──
+    if tf_name == 'five' and n >= 6:
+        last6 = closes[-6:]
+        last6_low = lows[-6:]
+        last6_high = highs[-6:]
+        last6_vol = volumes[-6:]
+        # 尾盘不跳水：最后6根收盘 > 各自开盘
+        hold_count = sum(1 for i in range(-6, 0) if closes[i] >= opens[i] if 'open' in df.columns)
+        if hold_count >= 4:
+            score += 0.3
+            reasons.append("尾盘企稳")
+        # 尾盘放量拉升 → 抢筹
+        if hold_count >= 5 and np.mean(last6_vol[-3:]) > np.mean(last6_vol[:3]) * 1.3:
+            score += 0.5
+            reasons.append("尾盘抢筹")
+        # 尾盘跳水 → 危险
+        if hold_count <= 2:
+            score -= 0.5
+            reasons.append("尾盘走弱")
+        # 最后3根成交量异常放大但价格不动 → 派发
+        if np.mean(last6_vol[-3:]) > np.mean(last6_vol[:3]) * 2.0 and abs(closes[-1] - closes[-6]) / closes[-6] < 0.003:
+            score -= 0.6
+            reasons.append("尾盘放量滞涨")
+
+    return score, reasons
+
+
+def _mtf_bonus(code, df, score, reasons_list):
+    """多时间框架信号合成：5min+15min+60min+日线共振
+
+    权重: 日线40% + 60分30% + 15分20% + 5分10%
+    多周期同时看涨 → 加分；分钟级走弱但日线看涨 → 减分(回调风险)
+    """
+    try:
+        from data import get_mtf_kline
+        mtf = get_mtf_kline(code)
+        if len(mtf) < 2:  # 至少需要2个时间框架
+            return score
+
+        # ── 权重配置 ──
+        TF_WEIGHTS = {'daily': 0.40, 'hour': 0.30, 'quarter': 0.20, 'five': 0.10}
+        tf_results = {}  # tf_name -> {'signal': -2~2, 'reasons': [...]}
+
+        for tf_name, tf_df in mtf.items():
+            if tf_df is None or len(tf_df) < 10:
+                continue
+            # 日线用现有评分信号推导
+            if tf_name == 'daily':
+                closes = tf_df['close'].values
+                rsi = compute_rsi(tf_df['close'])
+                sig = 0
+                if rsi and 40 <= rsi <= 60:
+                    sig += 0.3
+                # 日线趋势
+                if len(closes) >= 20:
+                    ma5 = np.mean(closes[-5:])
+                    ma20 = np.mean(closes[-20:])
+                    if ma5 > ma20:
+                        sig += 0.5
+                    else:
+                        sig -= 0.3
+                # MACD
+                macd_line, _, macd_hist = compute_macd(tf_df['close'])
+                if np.isfinite(macd_hist):
+                    if macd_hist > 0: sig += 0.4
+                    elif macd_hist < 0: sig -= 0.2
+                tf_results[tf_name] = {'signal': sig, 'reasons': []}
+            else:
+                sig, sig_reasons = _detect_intraday_pattern(tf_name, tf_df)
+                tf_results[tf_name] = {'signal': sig, 'reasons': sig_reasons}
+
+        if len(tf_results) < 2:
+            return score
+
+        # ── 加权综合信号 ──
+        weighted_signal = 0.0
+        total_weight = 0.0
+        for tf_name, res in tf_results.items():
+            w = TF_WEIGHTS.get(tf_name, 0.1)
+            weighted_signal += res['signal'] * w
+            total_weight += w
+        if total_weight > 0:
+            weighted_signal /= total_weight
+
+        # ── 多周期共振判定 ──
+        ups = sum(1 for r in tf_results.values() if r['signal'] > 0.3)
+        downs = sum(1 for r in tf_results.values() if r['signal'] < -0.3)
+        strong_ups = sum(1 for r in tf_results.values() if r['signal'] > 0.8)
+
+        # 日线信号方向
+        daily_sig = tf_results.get('daily', {}).get('signal', 0)
+        hour_sig = tf_results.get('hour', {}).get('signal', 0)
+        quarter_sig = tf_results.get('quarter', {}).get('signal', 0)
+        five_sig = tf_results.get('five', {}).get('signal', 0)
+
+        # ── 加分项 ──
+        bonus = 0
+        # 强共振：>=3个TF同时看涨（含日线）
+        if ups >= 3 and daily_sig > 0:
+            bonus = min(12, int(ups * 3 + strong_ups * 2))
+            reasons_list.append(f'MTF强共振(+{bonus},{ups}/{len(tf_results)})')
+        # 中等共振：2个TF看涨（含日线+60min）
+        elif ups >= 2 and daily_sig > 0 and hour_sig > 0:
+            bonus = min(8, int(ups * 3))
+            reasons_list.append(f'MTF共振(+{bonus})')
+        # 日线偏多且分钟级不弱
+        elif daily_sig > 0.3 and hour_sig > -0.3:
+            bonus = 3
+            reasons_list.append(f'MTF偏多(+3)')
+
+        # ── 扣分项 ──
+        penalty = 0
+        # 日线看涨但60min/15min走弱 → 回调风险
+        if daily_sig > 0 and (hour_sig < -0.5 or quarter_sig < -0.5):
+            penalty = min(10, int(abs(hour_sig) * 6 + abs(quarter_sig) * 4))
+            reasons_list.append(f'MTF背离(日线涨-分钟跌,-{penalty})')
+        # 全线走弱
+        if downs >= 3:
+            penalty = max(penalty, 10)
+            reasons_list.append(f'MTF全线走弱(-{penalty})')
+        # 尾盘走弱（5分钟级检测）
+        five_reasons = tf_results.get('five', {}).get('reasons', [])
+        if '尾盘走弱' in five_reasons or '尾盘放量滞涨' in five_reasons:
+            penalty = max(penalty, 6)
+            reasons_list.append('尾盘弱势(-6)')
+
+        # ── 分钟级形态细节 ──
+        # 把最主要的分钟级形态加到reasons里（最多2条）
+        detail_shown = 0
+        for tf_name in ['hour', 'quarter', 'five']:
+            if tf_name not in tf_results:
+                continue
+            tf_r = tf_results[tf_name].get('reasons', [])
+            # 只显示有意义的形态
+            meaningful = [r for r in tf_r if r not in ('MA多头', 'MA空头')]
+            if meaningful and detail_shown < 2:
+                label = {'hour': '60分', 'quarter': '15分', 'five': '5分'}.get(tf_name, tf_name)
+                reasons_list.append(f'{label}:{",".join(meaningful[:2])}')
+                detail_shown += 1
+
+        score = score + bonus - penalty
+        score = max(0, min(100, score))
+
+    except Exception:
+        pass
+    return score
+
+
 def _apply_dynamic_factors(code, df, base_score, reasons_list):
     if not DYNAMIC_FACTORS: return base_score
     score = base_score
     for factor_name, factor_code in DYNAMIC_FACTORS.items():
         try:
-            safe_globals = {'pd': pd, 'np': np, '__builtins__': {}}
-            safe_locals = {}
-            exec(factor_code, safe_globals, safe_locals)
-            factor_func = safe_locals.get(factor_name)
-            if factor_func and df is not None:
-                dynamic_score = factor_func(df)
-                if dynamic_score is not None and np.isfinite(float(dynamic_score)):
-                    perf = FACTOR_PERFORMANCE.get(factor_name, {})
-                    ic = perf.get('ic', 0)
-                    weight = max(0.3, min(2.0, abs(ic) * 30))
-                    score += int(float(dynamic_score) * weight)
-                    reasons_list.append(f"AI因子:{factor_name}(IC={ic:.3f})")
+            # 支持两种格式：
+            # 1. 公式表达式（如 "close_pos * vol_ratio"）→ 用data.eval
+            # 2. Python函数定义（含def）→ 用exec
+            if factor_code.strip().startswith('def '):
+                safe_globals = {'pd': pd, 'np': np, '__builtins__': {}}
+                safe_locals = {}
+                exec(factor_code, safe_globals, safe_locals)
+                factor_func = safe_locals.get(factor_name)
+                if factor_func and df is not None:
+                    dynamic_score = factor_func(df)
+                else:
+                    continue
+            else:
+                # 公式表达式：直接用pandas eval在df上计算
+                if df is None or len(df) < 5:
+                    continue
+                dynamic_score = df.eval(factor_code).iloc[-1]
+                try:
+                    dynamic_score = float(dynamic_score)
+                except (ValueError, TypeError):
+                    continue
+
+            if dynamic_score is not None and np.isfinite(float(dynamic_score)):
+                perf = FACTOR_PERFORMANCE.get(factor_name, {})
+                ic = perf.get('ic', 0)
+                weight = max(0.3, min(2.0, abs(ic) * 30))
+                score += int(float(dynamic_score) * weight)
+                reasons_list.append(f"AI因子:{factor_name}(IC={ic:.3f})")
+        except Exception:
+            pass
+    return score
+
+
+def _factor_score_single(fname, fval):
+    """单个因子原始值→分数映射
+
+    返回 (score_contribution, label)
+    负数=扣分，正数=加分，0=中性
+    每个因子范围尽量控制在 -5~+5，总因子分预期 -20~+30
+    """
+    # ── 跳过原始价量字段（无上下文无意义）──
+    if fname in ('close', 'open', 'high', 'low', 'volume'):
+        return 0, ''
+
+    # ── 跳过已是独立策略的因子（避免双倍计算）──
+    if fname in ('consecutive_yang', 'cointegration', 'three_push', 'climax'):
+        return 0, ''
+
+    if fval is None or not (isinstance(fval, (int, float))):
+        return 0, ''
+
+    try:
+        v = float(fval)
+    except (ValueError, TypeError):
+        return 0, ''
+
+    if not np.isfinite(v):
+        return 0, ''
+
+    # ===== 下面按因子逐一定义分数映射 =====
+
+    # ── turnover 换手率（中高=活跃，极高=出货，极低=僵尸）──
+    if fname == 'turnover':
+        if 2.0 <= v <= 8.0:
+            return 3, '换手率活跃'
+        elif 8.0 < v <= 15.0:
+            return 1, '换手率偏高'
+        elif v > 15.0:
+            return -3, '换手率过高'
+        elif 0.5 <= v < 2.0:
+            return 1, '换手率偏低'
+        else:
+            return -3, '换手率僵尸'
+
+    # ── momentum_1m 近1月动量（0-15%最佳）──
+    if fname == 'momentum_1m':
+        v_pct = v * 100
+        if 0 <= v_pct <= 15:
+            return 4, f'1月动量{v_pct:.0f}%'
+        elif 15 < v_pct <= 30:
+            return 1, f'1月动量{v_pct:.0f}%偏高'
+        elif v_pct > 30:
+            return -4, f'1月动量{v_pct:.0f}%过热'
+        elif -10 <= v_pct < 0:
+            return 1, f'1月微跌{v_pct:.0f}%'
+        else:
+            return -2, f'1月大跌{v_pct:.0f}%'
+
+    # ── amplitude_20d 20日均振幅（2-5%健康）──
+    if fname == 'amplitude_20d':
+        if 2.0 <= v <= 5.0:
+            return 3, f'振幅{v:.1f}%健康'
+        elif 5.0 < v <= 8.0:
+            return 1, f'振幅{v:.1f}%偏高'
+        elif v > 8.0:
+            return -3, f'振幅{v:.1f}%过大'
+        elif 1.0 <= v < 2.0:
+            return -1, f'振幅{v:.1f}%偏低'
+        else:
+            return -4, f'振幅{v:.1f}%僵尸'
+
+    # ── volume_ratio_20 20日量比（1-3倍健康）──
+    if fname == 'volume_ratio_20':
+        if 1.0 <= v <= 3.0:
+            return 3, f'量比{v:.1f}'
+        elif 3.0 < v <= 5.0:
+            return 1, f'量比{v:.1f}偏高'
+        elif v > 5.0:
+            return -4, f'量比{v:.1f}异常'
+        elif 0.5 <= v < 1.0:
+            return -2, f'量比{v:.1f}缩量'
+        else:
+            return -3, f'量比{v:.1f}极度缩量'
+
+    # ── rsi_14 RSI（40-60健康）──
+    # ⚠️ 注意：已有inline RSI调整（30-50→+10, >75→-20等），这里轻度叠加
+    if fname == 'rsi_14':
+        if 40 <= v <= 60:
+            return 2, 'RSI中性'
+        elif 30 <= v < 40:
+            return 1, 'RSI偏低'
+        elif v > 75:
+            return -3, 'RSI严重超买'
+        elif 60 < v <= 75:
+            return -1, 'RSI偏高'
+        elif v < 30:
+            return 1, 'RSI超卖反弹'
+        return 0, ''
+
+    # ── macd_dif MACD快线（正=多头）──
+    if fname == 'macd_dif':
+        if v > 0:
+            return 2, 'MACD正值'
+        else:
+            return -2, 'MACD负值'
+
+    # ── kdj_j KDJ-J值（20-80正常）──
+    if fname == 'kdj_j':
+        if 30 <= v <= 70:
+            return 1, 'KDJ中性'
+        elif 70 < v <= 85:
+            return -1, 'KDJ偏高'
+        elif v > 85:
+            return -3, 'KDJ严重超买'
+        elif 15 <= v < 30:
+            return 1, 'KDJ偏低'
+        elif v < 15:
+            return 2, 'KDJ严重超卖'
+        return 0, ''
+
+    # ── boll_position 布林带位置（0.3-0.7健康）──
+    if fname == 'boll_position':
+        if 0.3 <= v <= 0.7:
+            return 2, '布林中轨'
+        elif 0.7 < v <= 0.9:
+            return 1, '布林上轨区'
+        elif v > 0.95:
+            return -3, '布林上轨外'
+        elif 0.1 <= v < 0.3:
+            return 1, '布林下轨区'
+        elif v < 0.1:
+            return -1, '布林下轨外'
+        return 0, ''
+
+    # ── atr_14 真实波幅（低=僵尸，高=不稳定）──
+    if fname == 'atr_14':
+        if 0.01 <= v <= 0.04:
+            return 2, '波幅适中'
+        elif 0.04 < v <= 0.07:
+            return 1, '波幅偏高'
+        elif v > 0.07:
+            return -2, '波幅过大'
+        elif v < 0.01:
+            return -3, '波幅过低僵尸'
+        return 0, ''
+
+    # ── ma5_slope MA5斜率（1-3%/日健康上升）──
+    if fname == 'ma5_slope':
+        v_pct = v * 100
+        if 1.0 <= v_pct <= 3.0:
+            return 3, f'MA5斜率{v_pct:.1f}%'
+        elif 3.0 < v_pct <= 5.0:
+            return 1, f'MA5斜率{v_pct:.1f}%偏高'
+        elif v_pct > 5.0:
+            return -3, f'MA5斜率{v_pct:.1f}%过陡'
+        elif -1.0 <= v_pct < 1.0:
+            return 0, ''
+        else:
+            return -2, f'MA5斜率{v_pct:.1f}%下降'
+
+    # ── gap_ratio 跳空缺口（小正=好，太大=追高风险）──
+    if fname == 'gap_ratio':
+        v_pct = v * 100
+        if 0.5 <= v_pct <= 2.0:
+            return 2, f'跳空{v_pct:.1f}%'
+        elif 2.0 < v_pct <= 4.0:
+            return 1, f'跳空{v_pct:.1f}%偏高'
+        elif v_pct > 4.0:
+            return -3, f'跳空{v_pct:.1f}%过大'
+        elif -1.0 <= v_pct < 0.5:
+            return 0, ''
+        else:
+            return -2, f'跳空低开{v_pct:.1f}%'
+
+    # ── volume_breakout 放量突破信号（1.5-3倍最佳）──
+    if fname == 'volume_breakout':
+        if 1.5 <= v <= 3.0:
+            return 3, '放量突破'
+        elif 3.0 < v <= 5.0:
+            return 1, '放量突破(偏高)'
+        elif v > 5.0:
+            return -3, '放量异常'
+        elif 1.0 <= v < 1.5:
+            return 1, '温和放量'
+        else:
+            return -1, '缩量'
+        return 0, ''
+
+    # ── ma_convergence 均线粘合度（高=即将选择方向）──
+    if fname == 'ma_convergence':
+        if v > 0.8:
+            return 3, '均线高度粘合'
+        elif 0.6 < v <= 0.8:
+            return 2, '均线粘合'
+        elif 0.4 < v <= 0.6:
+            return 1, '均线轻度粘合'
+        else:
+            return 0, ''
+
+    return 0, ''
+
+
+def _apply_factor_scores(code, score, reasons_list):
+    """读取FACTOR_REGISTRY全部活跃因子值 + 资金流向，计算因子分并叠加到总评分
+
+    每个因子独立打分（-5~+5），总因子分 -20~+30
+    """
+    try:
+        from data import load_factor_data
+        fdata = load_factor_data(code)
+        if not fdata or len(fdata) < 5:
+            return score
+
+        total_factor = 0
+        factor_hits = []
+
+        # ── 资金流向加分（如果已缓存）──
+        try:
+            from data import _cache_get, _info_cache
+            info = _cache_get(_info_cache, code, 1) or {}
+            main_flow = info.get('主力净流入')
+            if main_flow is not None:
+                if main_flow > 1e7:
+                    total_factor += 3; factor_hits.append(('capital_flow', 3, '主力大幅流入+3'))
+                elif main_flow > 1e6:
+                    total_factor += 2; factor_hits.append(('capital_flow', 2, '主力净流入+2'))
+                elif main_flow > 0:
+                    total_factor += 1; factor_hits.append(('capital_flow', 1, '主力微流入+1'))
+                elif main_flow < -1e7:
+                    total_factor -= 2; factor_hits.append(('capital_flow', -2, '主力大幅流出-2'))
+                elif main_flow < -1e6:
+                    total_factor -= 1; factor_hits.append(('capital_flow', -1, '主力净流出-1'))
         except:
             pass
+
+        for fname, fval in fdata.items():
+            try:
+                delta, label = _factor_score_single(fname, fval)
+                if delta != 0:
+                    total_factor += delta
+                    factor_hits.append((fname, delta, label))
+            except Exception:
+                continue
+
+        if total_factor != 0:
+            # 因子分扣除策略已覆盖的部分（避免超大幅度波动）
+            total_factor = max(-20, min(30, total_factor))
+            score = max(0, min(100, score + total_factor))
+
+            # 显示贡献最大的3个正因子和1个负因子
+            pos = [(n, d, l) for n, d, l in factor_hits if d > 0]
+            neg = [(n, d, l) for n, d, l in factor_hits if d < 0]
+            pos.sort(key=lambda x: -x[1])
+            neg.sort(key=lambda x: x[1])
+
+            parts = []
+            for n, d, l in pos[:3]:
+                parts.append(f'{l}(+{d})')
+            for n, d, l in neg[:2]:
+                parts.append(f'{l}({d})')
+            if parts:
+                reasons_list.append(f'因子分{total_factor:+d}: {" ".join(parts)}')
+
+    except Exception:
+        pass
     return score
 
 

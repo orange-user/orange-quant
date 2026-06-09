@@ -68,7 +68,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS daily_data
-                 (code TEXT, date TEXT, open REAL, close REAL, high REAL, low REAL, volume REAL, PRIMARY KEY(code,date))''')
+                 (code TEXT, date TEXT, open REAL, close REAL, high REAL, low REAL, volume REAL, adjust TEXT DEFAULT 'qfq', PRIMARY KEY(code,date))''')
     c.execute('''CREATE TABLE IF NOT EXISTS factor_scores
                  (code TEXT, date TEXT, factor_name TEXT, score REAL, PRIMARY KEY(code,date,factor_name))''')
     c.execute('''CREATE TABLE IF NOT EXISTS factor_cache
@@ -83,14 +83,14 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
     conn = sqlite3.connect(DB_PATH)
     try:
         if not force_refresh:
-            df = pd.read_sql_query("SELECT * FROM daily_data WHERE code=? ORDER BY date DESC LIMIT ?", conn, params=(code, days))
+            df = pd.read_sql_query("SELECT * FROM daily_data WHERE code=? AND adjust=? ORDER BY date DESC LIMIT ?", conn, params=(code, "qfq", days))
             if len(df) >= days:
                 # 检查缓存是否够新（最新数据在3个交易日内）
                 latest_date = df['date'].iloc[0]
                 try:
                     from datetime import timedelta
                     latest_dt = datetime.datetime.strptime(str(latest_date), '%Y%m%d').date()
-                    if (datetime.date.today() - latest_dt).days <= 3:
+                    if (datetime.date.today() - latest_dt).days <= 5:
                         df = df.sort_values('date')
                         df['returns'] = df['close'].pct_change()
                         df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
@@ -138,7 +138,7 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
                     conn = sqlite3.connect(DB_PATH)
                     for _, row in df.iterrows():
                         try:
-                            conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                            conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?,?)",
                                          (code, str(row['date']), float(row['open']), float(row['close']),
                                           float(row['high']), float(row['low']), float(row['volume'])))
                         except: pass
@@ -161,7 +161,7 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
             conn = sqlite3.connect(DB_PATH)
             for _, row in df.iterrows():
                 try:
-                    conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                    conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?,?)",
                                  (code, str(row['date']), float(row['open']), float(row['close']),
                                   float(row['high']), float(row['low']), float(row['volume'])))
                 except: pass
@@ -204,9 +204,8 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
         conn = sqlite3.connect(DB_PATH)
         for _, row in df.iterrows():
             try:
-                conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
-                             (code, str(row['date']), float(row.get('open',0)), float(row.get('close',0)),
-                              float(row.get('high',0)), float(row.get('low',0)), float(row.get('volume',0))))
+                conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?,?)",
+                             (code, str(row['date']), float(row.get('open',0)), float(row.get('close',0)), float(row.get('high',0)), float(row.get('low',0)), float(row.get('volume',0)), 'qfq'))
             except:
                 pass
         conn.commit()
@@ -247,7 +246,7 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
             conn = sqlite3.connect(DB_PATH)
             for _, row in df.iterrows():
                 try:
-                    conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                    conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?,?)",
                                  (code, str(row['date']), float(row['open']), float(row['close']),
                                   float(row['high']), float(row['low']), float(row['volume'])))
                 except:
@@ -277,17 +276,30 @@ def get_stock_daily_cached(code, days=60, force_refresh=False):
         from datetime import date, timedelta
         end_d = date.today().strftime('%Y%m%d')
         start_d = (date.today() - timedelta(days=days + 30)).strftime('%Y%m%d')
-        df = ak.stock_zh_a_hist_tx(symbol=tx_code, start_date=start_d, end_date=end_d)
-        if df is None or len(df) < days:
+        # Direct Tencent fqkline API (qfq-adjusted) - not ak.stock_zh_a_hist_tx (unadjusted)
+        try:
+            import httpx
+            url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={tx_code},day,,,{days},qfq"
+            resp = httpx.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+            data = resp.json()
+            rows = []
+            inner = data.get('data', {}).get(tx_code, {})
+            klines = inner.get('qfqday', inner.get('day', []))
+            for k in klines:
+                if len(k) >= 6:
+                    rows.append({'date': str(k[0]), 'open': float(k[1]), 'close': float(k[2]),
+                                 'high': float(k[3]), 'low': float(k[4]), 'volume': float(k[5])})
+            if rows and len(rows) >= days:
+                df = pd.DataFrame(rows).tail(days).copy()
+            else:
+                return None
+        except Exception:
             return None
-        df = df.tail(days).copy()
-        df.columns = ['date', 'open', 'close', 'high', 'low', 'volume']
-        df['date'] = df['date'].astype(str)
 
         conn = sqlite3.connect(DB_PATH)
         for _, row in df.iterrows():
             try:
-                conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                conn.execute("INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?,?)",
                              (code, str(row['date']), float(row['open']), float(row['close']),
                               float(row['high']), float(row['low']), float(row['volume'])))
             except:
@@ -357,7 +369,7 @@ def get_minute_kline(code, scale=15, bars=96):
         return cached
 
     import httpx as _h
-    prefix = 'sh' if code.startswith(('6', '9')) else 'sz'
+    prefix = 'sh' if code.startswith(('6', '9', '51', '52')) else 'sz'
     url = (
         f'http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/'
         f'CN_MarketData.getKLineData?symbol={prefix}{code}&scale={scale}&datalen={bars}'
@@ -1038,7 +1050,7 @@ def batch_warm_cache(codes, days=60, max_workers=16):
     conn = sqlite3.connect(DB_PATH)
     try:
         cached_df = pd.read_sql_query(
-            "SELECT code, COUNT(*) as cnt FROM daily_data GROUP BY code", conn)
+            "SELECT code, COUNT(*) as cnt FROM daily_data WHERE adjust='qfq' GROUP BY code", conn)
         cached_set = set(cached_df[cached_df['cnt'] >= days]['code'].tolist())
     except:
         cached_set = set()
@@ -1089,7 +1101,7 @@ def batch_warm_cache(codes, days=60, max_workers=16):
                         for _, row in df.iterrows():
                             try:
                                 conn.execute(
-                                    "INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?)",
+                                    "INSERT OR REPLACE INTO daily_data VALUES (?,?,?,?,?,?,?,?)",
                                     (stock_code, str(row['date']), float(row['open']),
                                      float(row['close']), float(row['high']),
                                      float(row['low']), float(row['volume'])))
@@ -1104,7 +1116,7 @@ def batch_warm_cache(codes, days=60, max_workers=16):
     # 剩余未缓存的用传统方式补齐
     remaining = [c for c in uncached if c not in
                  {r[0] for r in sqlite3.connect(DB_PATH).execute(
-                     "SELECT code FROM daily_data GROUP BY code HAVING COUNT(*) >= ?", (days,)).fetchall()}]
+                     "SELECT code FROM daily_data WHERE adjust='qfq' GROUP BY code HAVING COUNT(*) >= ?", (days,)).fetchall()}]
     if remaining:
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = {ex.submit(get_stock_daily_cached, c, days): c for c in remaining}
@@ -1119,3 +1131,45 @@ def batch_warm_cache(codes, days=60, max_workers=16):
                     failed += 1
 
     return {'warmed': warmed + wudao_warmed, 'failed': failed, 'already_cached': already, 'total': total}
+
+
+def backup_daily_data():
+    """CSV日终备份：每日收盘后保存最近30天数据到CSV"""
+    import shutil
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%%Y%%m%%d')
+        df = pd.read_sql_query(
+            "SELECT * FROM daily_data WHERE date >= ? ORDER BY code, date",
+            conn, params=(cutoff,))
+        conn.close()
+        if len(df) > 0:
+            path = os.path.join(DATA_DIR, f'daily_backup_{datetime.datetime.now().strftime("%Y%m%d")}.csv')
+            df.to_csv(path, index=False)
+            # 保留最近7天
+            backups = sorted([f for f in os.listdir(DATA_DIR) if f.startswith('daily_backup_')])
+            while len(backups) > 7:
+                os.remove(os.path.join(DATA_DIR, backups.pop(0)))
+            return len(df)
+    except Exception as e:
+        logger.warning(f'backup_daily_data failed: {e}')
+        return 0
+
+
+def verify_data_quality():
+    """数据质量快速检查"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        issues = []
+        # volume=0的检查
+        df = pd.read_sql_query("SELECT code, date FROM daily_data WHERE volume=0 AND date > (SELECT MAX(date) FROM daily_data)-7", conn)
+        if len(df) > 0:
+            issues.append(f'volume=0: {len(df)}行')
+        # OHLC异常检查
+        df2 = pd.read_sql_query("SELECT COUNT(*) as bad FROM daily_data WHERE (high<low OR open<=0 OR close<=0)", conn)
+        if df2['bad'].iloc[0] > 0:
+            issues.append(f'OHLC异常: {df2["bad"].iloc[0]}行')
+        conn.close()
+        return issues if issues else ['OK']
+    except Exception as e:
+        return [f'check failed: {e}']

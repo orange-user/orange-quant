@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>橘子量化 · VIP信号服务</title>
+  <script src="/static/js/lib/vue.global.prod.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    :root { --amber: #f59e0b; --orange: #f97316; --bg: #0f0f13; --card: #1a1a23; --card2: #22222e; --text: #e8e8ed; --sub: #8888a0; --green: #22c55e; --red: #ef4444; --blue: #3b82f6; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .container { max-width: 800px; margin: 0 auto; padding: 20px 16px; }
+
+    /* Hero */
+    .hero { text-align: center; padding: 40px 0 30px; }
+    .hero h1 { font-size: 28px; font-weight: 800; letter-spacing: 1px; }
+    .hero h1 span { color: var(--amber); }
+    .hero .sub { color: var(--sub); font-size: 14px; margin-top: 8px; }
+    .hero .badge { display: inline-block; background: var(--amber); color: #000; font-size: 11px; font-weight: 700; padding: 2px 10px; border-radius: 999px; margin-top: 10px; }
+
+    /* Cards */
+    .card { background: var(--card); border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 1px solid rgba(255,255,255,0.06); }
+    .card h2 { font-size: 16px; font-weight: 700; margin-bottom: 14px; color: var(--amber); }
+    .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+
+    /* Pricing */
+    .pricing-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+    .pricing-grid .plan { background: var(--card2); border-radius: 10px; padding: 20px; text-align: center; border: 1px solid rgba(255,255,255,0.06); transition: all 0.2s; }
+    .pricing-grid .plan.featured { border-color: var(--amber); position: relative; }
+    .pricing-grid .plan.featured::before { content: '推荐'; position: absolute; top: -8px; right: 12px; background: var(--amber); color: #000; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+    .pricing-grid .plan .price { font-size: 32px; font-weight: 800; color: var(--amber); margin: 10px 0; }
+    .pricing-grid .plan .price small { font-size: 14px; color: var(--sub); }
+    .pricing-grid .plan ul { list-style: none; font-size: 13px; color: var(--sub); line-height: 2; text-align: left; padding-left: 4px; }
+    .pricing-grid .plan ul li::before { content: '✓ '; color: var(--green); }
+
+    /* Button */
+    .btn { display: inline-block; background: var(--amber); color: #000; font-weight: 700; font-size: 15px; padding: 12px 36px; border-radius: 8px; text-decoration: none; border: none; cursor: pointer; transition: opacity 0.2s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-sm { padding: 8px 20px; font-size: 13px; }
+
+    /* Signal table */
+    .signal-row { display: flex; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 13px; }
+    .signal-row:last-child { border: none; }
+    .signal-row .rank { width: 28px; height: 28px; border-radius: 50%; background: var(--card2); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; margin-right: 12px; flex-shrink: 0; }
+    .signal-row .rank.r1 { background: #ef4444; color: #fff; }
+    .signal-row .rank.r2 { background: #f97316; color: #fff; }
+    .signal-row .rank.r3 { background: #eab308; color: #000; }
+    .signal-row .info { flex: 1; }
+    .signal-row .info .name { font-weight: 600; font-size: 14px; }
+    .signal-row .info .code { color: var(--sub); font-size: 11px; }
+    .signal-row .signal-badge { padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .signal-row .signal-badge.strong { background: rgba(239,68,68,0.2); color: #ef4444; }
+    .signal-row .signal-badge.buy { background: rgba(249,115,22,0.2); color: #f97316; }
+    .signal-row .signal-badge.watch { background: rgba(234,179,8,0.2); color: #eab308; }
+
+    /* Track record */
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
+    .stat-box { background: var(--card2); border-radius: 8px; padding: 12px; text-align: center; }
+    .stat-box .num { font-size: 20px; font-weight: 800; }
+    .stat-box .num.green { color: var(--green); }
+    .stat-box .num.red { color: var(--red); }
+    .stat-box .num.amber { color: var(--amber); }
+    .stat-box .label { font-size: 11px; color: var(--sub); margin-top: 2px; }
+
+    /* Timeline */
+    .timeline { position: relative; padding-left: 20px; }
+    .timeline::before { content: ''; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.06); }
+    .tl-item { position: relative; margin-bottom: 16px; font-size: 13px; }
+    .tl-item::before { content: ''; position: absolute; left: -16px; top: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+    .tl-item .date { color: var(--sub); font-size: 11px; }
+    .tl-item .stocks { margin-top: 4px; color: var(--text); }
+
+    /* Premium overlay */
+    .premium-overlay { position: relative; }
+    .premium-overlay .blur-content { filter: blur(5px); pointer-events: none; user-select: none; }
+    .premium-overlay .paywall { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: var(--card); padding: 30px 40px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); z-index: 10; }
+    .premium-overlay .paywall .lock-icon { font-size: 40px; margin-bottom: 10px; }
+    .premium-overlay .paywall p { color: var(--sub); font-size: 13px; margin: 8px 0 16px; }
+
+    /* QR */
+    .qr-section { text-align: center; padding: 16px; }
+    .qr-section img { width: 200px; height: 200px; border-radius: 8px; margin: 12px 0; }
+    .qr-section .hint { color: var(--sub); font-size: 12px; line-height: 1.8; }
+
+    /* Access form */
+    .access-form { display: flex; gap: 8px; max-width: 360px; margin: 12px auto; }
+    .access-form input { flex: 1; background: var(--card2); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 10px 14px; color: var(--text); font-size: 14px; outline: none; }
+    .access-form input:focus { border-color: var(--amber); }
+
+    /* Footer */
+    .footer { text-align: center; color: var(--sub); font-size: 11px; padding: 30px 0 40px; line-height: 2; }
+
+    /* Responsive */
+    @media (max-width: 600px) {
+      .pricing-grid { grid-template-columns: 1fr; }
+      .stat-grid { grid-template-columns: repeat(2, 1fr); }
+      .hero h1 { font-size: 22px; }
+    }
+
+    /* Toast */
+    .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: var(--card); border: 1px solid rgba(255,255,255,0.1); padding: 10px 24px; border-radius: 8px; font-size: 13px; z-index: 999; display: none; }
+    .toast.show { display: block; animation: fadeIn 0.3s; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+    .toast.success { border-color: var(--green); }
+    .toast.error { border-color: var(--red); }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- Toast -->
+    <div class="toast" :class="{show: toast.show, success: toast.type==='success', error: toast.type==='error'}">[[ toast.msg ]]</div>
+
+    <div class="container">
+      <!-- Hero -->
+      <div class="hero">
+        <h1>♢ <span>橘子量化</span></h1>
+        <div class="sub">A股超短线量化信号 · 尾盘买入 · 早盘卖出</div>
+        <div class="badge">每日 14:30 更新</div>
+      </div>
+
+      <!-- Stats / Track Record -->
+      <div class="card">
+        <h2>📊 信号战绩</h2>
+        <div v-if="loading" style="text-align:center;padding:20px;color:var(--sub);font-size:13px;">加载中...</div>
+        <div v-else>
+          <div class="stat-grid">
+            <div class="stat-box">
+              <div class="num amber">[[ stats.total_days || 0 ]]</div>
+              <div class="label">交易日</div>
+            </div>
+            <div class="stat-box">
+              <div class="num amber">[[ stats.total_signals || 0 ]]</div>
+              <div class="label">总信号</div>
+            </div>
+            <div class="stat-box">
+              <div class="num" :class="stats.win_rate > 60 ? 'green' : (stats.win_rate > 0 ? 'amber' : '')">[[ stats.win_rate || '-' ]]%</div>
+              <div class="label">胜率</div>
+            </div>
+            <div class="stat-box">
+              <div class="num">[[ stats.avg_return || '-' ]]%</div>
+              <div class="label">平均收益</div>
+            </div>
+          </div>
+
+          <!-- Daily signals -->
+          <h3 style="margin-top:16px;">📋 近期信号</h3>
+          <div v-if="!todaySignals.length" style="color:var(--sub);font-size:13px;padding:8px 0;">
+            暂无信号记录 — 扫描将在交易日下午自动运行
+          </div>
+          <div v-for="(sig, i) in todaySignals" :key="i" class="signal-row">
+            <div class="rank" :class="'r' + (i+1)">[[ i+1 ]]</div>
+            <div class="info">
+              <div class="name">[[ sig.name ]]</div>
+              <div class="code">[[ sig.code ]] · [[ sig.price || '?' ]]元 · [[ sig.change_pct >= 0 ? '+' : '' ]][[ sig.change_pct ]]%</div>
+            </div>
+            <div class="signal-badge" :class="sig.signal >= 70 ? 'strong' : (sig.signal >= 50 ? 'buy' : 'watch')">
+              [[ sig.signal >= 70 ? 'STRONG' : (sig.signal >= 50 ? 'BUY' : 'WATCH') ]] [[ sig.signal ]]
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Premium Signals (paywalled) -->
+      <div class="card premium-overlay" id="premiumSection">
+        <h2>🔒 VIP深度信号</h2>
+        <div v-if="!isPremium" class="paywall">
+          <div class="lock-icon">🔐</div>
+          <h3 style="color:var(--text);margin-bottom:4px;">开通VIP查看完整分析</h3>
+          <p>含 TOP5 深度分析 · AI策略解读 · 止损止盈建议 · 仓位计算</p>
+          <button class="btn" @click="scrollToPricing">立即订阅 199元/月</button>
+        </div>
+        <div v-else>
+          <div v-for="(sig, i) in premiumSignals" :key="i" class="signal-row">
+            <div class="rank" :class="'r' + (i+1)">[[ i+1 ]]</div>
+            <div class="info">
+              <div class="name">[[ sig.name ]]</div>
+              <div class="code">[[ sig.code ]] · [[ sig.price ]]元 · [[ sig.change_pct >= 0 ? '+' : '' ]][[ sig.change_pct ]]%</div>
+              <div v-if="sig.ai_summary" style="color:var(--sub);font-size:11px;margin-top:2px;">💡 [[ sig.ai_summary.slice(0, 60) ]]</div>
+            </div>
+            <div>
+              <div class="signal-badge" :class="sig.signal >= 70 ? 'strong' : (sig.signal >= 50 ? 'buy' : 'watch')">[[ sig.signal ]]</div>
+              <div v-if="sig.kelly_pct" style="font-size:10px;color:var(--sub);margin-top:2px;text-align:right;">
+                Kelly [[ sig.kelly_pct ]]% · [[ sig.kelly_shares || '?' ]]手
+              </div>
+            </div>
+          </div>
+          <div v-if="!premiumSignals.length" style="color:var(--sub);font-size:13px;padding:8px 0;">
+            今日暂无扫描数据，请等待14:30扫描完成
+          </div>
+        </div>
+      </div>
+
+      <!-- Pricing -->
+      <div class="card" id="pricingSection">
+        <h2>💎 订阅方案</h2>
+        <div class="pricing-grid">
+          <div class="plan">
+            <h3>体验版</h3>
+            <div class="price"><small>¥</small>99<small>/月</small></div>
+            <ul>
+              <li>TOP3信号推送</li>
+              <li>每日微信通知</li>
+              <li>基础信号解读</li>
+            </ul>
+            <div class="qr-section" style="padding:0;margin-top:12px;">
+              <p style="color:var(--sub);font-size:11px;">👇 扫码付款后加群</p>
+              <img src="/static/payment_qr.png" alt="付款码" onerror="this.style.display='none'" style="width:140px;height:140px;">
+            </div>
+          </div>
+          <div class="plan featured">
+            <h3>专业版</h3>
+            <div class="price"><small>¥</small>199<small>/月</small></div>
+            <ul>
+              <li>TOP5深度信号</li>
+              <li>止损止盈价</li>
+              <li>凯利仓位计算</li>
+              <li>AI策略解读</li>
+              <li>持仓管理建议</li>
+            </ul>
+            <div class="qr-section" style="padding:0;margin-top:12px;">
+              <p style="color:var(--sub);font-size:11px;">👇 扫码付款后加群</p>
+              <img src="/static/payment_qr.png" alt="付款码" onerror="this.style.display='none'" style="width:140px;height:140px;">
+            </div>
+          </div>
+        </div>
+
+        <!-- VIP Access Form -->
+        <div style="text-align:center;margin-top:12px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.06);">
+          <p style="color:var(--sub);font-size:12px;margin-bottom:8px;">已付款？输入会员码解锁VIP内容</p>
+          <div class="access-form">
+            <input v-model="accessCode" placeholder="输入会员码" @keyup.enter="unlock">
+            <button class="btn btn-sm" @click="unlock">解锁</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- How it works -->
+      <div class="card">
+        <h2>⚡ 服务说明</h2>
+        <div class="timeline">
+          <div class="tl-item">
+            <div class="date">14:25 — 系统预热</div>
+            <div class="stocks">加载全市场数据、更新因子权重</div>
+          </div>
+          <div class="tl-item">
+            <div class="date">14:30 — 全市场扫描</div>
+            <div class="stocks">5000+ 股票预筛 → 17策略评分 → 权重排序 → TOP5出炉</div>
+          </div>
+          <div class="tl-item">
+            <div class="date">14:35 — AI委员会评审</div>
+            <div class="stocks">DeepSeek分析市场情绪、验证信号合理性</div>
+          </div>
+          <div class="tl-item">
+            <div class="date">14:40 — 信号推送</div>
+            <div class="stocks">TOP5含买入价、止损价、仓位比例，微信同步推送</div>
+          </div>
+          <div class="tl-item">
+            <div class="date">次日 09:25 — 卖出指导</div>
+            <div class="stocks">竞价前推送止盈止损建议，锁定利润</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Faq -->
+      <div class="card">
+        <h2>❓ 常见问题</h2>
+        <div style="font-size:13px;line-height:2;">
+          <p><strong>Q: 怎么加入？</strong><br>扫码付款 → 加微信 qzpulse → 发付款截图 → 获取会员码 → 解锁VIP</p>
+          <p style="margin-top:10px;"><strong>Q: 信号能保证赚钱吗？</strong><br>量化信号提供概率优势，非100%胜率。本服务基于 <span style="color:var(--amber);font-weight:600;">策略回测+实盘验证</span>，请合理分配仓位。</p>
+          <p style="margin-top:10px;"><strong>Q: 每天什么时候收到信号？</strong><br>工作日下午14:30-14:45间完成扫描，微信/网页同步更新。</p>
+          <p style="margin-top:10px;"><strong>Q: 可以退款吗？</strong><br>虚拟服务，购买后不支持退款。建议先免费观察1-2天再订阅。</p>
+        </div>
+      </div>
+
+      <!-- Track record history -->
+      <div class="card" v-if="signalHistory.length">
+        <h2>📜 历史信号追踪</h2>
+        <div v-for="(day, idx) in signalHistory" :key="idx" style="font-size:12px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+          <span style="color:var(--sub);">[[ day.date ]]</span>
+          <span v-for="(s, si) in day.stocks.slice(0,3)" :key="si" style="margin-left:8px;">
+            [[ s.name ]] <span :style="{color: s.signal>=60 ? 'var(--amber)' : 'var(--sub)'}">[[ s.signal ]]</span>
+          </span>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer">
+        <div style="font-size:13px;color:var(--sub);margin-bottom:8px;">联系微信：<strong style="color:var(--text);">qzpulse</strong></div>
+        <div>橘子量化 · A股超短线量化系统</div>
+        <div style="margin-top:4px;">⚠️ 本服务仅供参考，投资有风险，入市需谨慎</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const { createApp, ref, onMounted, computed } = Vue;
+
+    createApp({
+      delimiters: ['[[', ']]'],
+      setup() {
+        const toast = ref({ show: false, msg: '', type: 'success' });
+        const loading = ref(true);
+        const stats = ref({});
+        const todaySignals = ref([]);
+        const premiumSignals = ref([]);
+        const signalHistory = ref([]);
+        const isPremium = ref(false);
+        const accessCode = ref('');
+
+        function showToast(msg, type = 'success') {
+          toast.value = { show: true, msg, type };
+          setTimeout(() => toast.value.show = false, 3000);
+        }
+
+        async function loadData() {
+          loading.value = true;
+          try {
+            // Get today's scan
+            const res = await fetch('/api/vip_today');
+            const data = await res.json();
+            if (data.status === 'ok') {
+              todaySignals.value = data.public_signals || [];
+              premiumSignals.value = data.premium_signals || [];
+              stats.value = data.stats || {};
+            }
+          } catch(e) {
+            console.error('load error:', e);
+          }
+          loading.value = false;
+        }
+
+        async function loadHistory() {
+          try {
+            const res = await fetch('/api/vip_history');
+            const data = await res.json();
+            if (data.status === 'ok') {
+              signalHistory.value = data.history || [];
+            }
+          } catch(e) {}
+        }
+
+        function unlock() {
+          const code = accessCode.value.trim().toUpperCase();
+          if (!code) { showToast('请输入会员码', 'error'); return; }
+          fetch('/api/vip_unlock', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ code })
+          }).then(r => r.json()).then(data => {
+            if (data.status === 'ok') {
+              isPremium.value = true;
+              showToast('✅ VIP已解锁，享受完整服务！', 'success');
+            } else {
+              showToast('❌ ' + (data.message || '会员码无效'), 'error');
+            }
+          }).catch(() => showToast('验证失败，请重试', 'error'));
+        }
+
+        function scrollToPricing() {
+          document.getElementById('pricingSection').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        onMounted(() => {
+          loadData();
+          loadHistory();
+          // Check if VIP cookie exists
+          if (document.cookie.includes('vip=true')) {
+            isPremium.value = true;
+          }
+        });
+
+        return { toast, loading, stats, todaySignals, premiumSignals, signalHistory, isPremium, accessCode, unlock, scrollToPricing };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

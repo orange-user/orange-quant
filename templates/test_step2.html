@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Test Step 2</title>
+</head>
+<body>
+  <div id="app">
+    <h1>[[ message ]]</h1>
+    <p id="result"></p>
+  </div>
+  <script src="/static/js/lib/vue.global.prod.js"></script>
+  <script src="/static/js/lib/echarts.min.js"></script>
+  <script>
+    console.log('Vue loaded:', typeof Vue);
+    console.log('echarts loaded:', typeof echarts);
+    const { createApp, ref } = Vue;
+    createApp({
+      delimiters: ['[[', ']]'],
+      setup() {
+        const message = ref('Vue+ECharts 都加载成功');
+        return { message };
+      }
+    }).mount('#app');
+    document.getElementById('result').textContent = 'Vue=' + (typeof Vue) + ' echarts=' + (typeof echarts);
+  </script>
+</body>
+</html>

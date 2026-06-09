@@ -1,64 +1,22 @@
-const CACHE = 'quant-pulse-v3';
-const ASSETS = [
-  '/static/css/style.css',
-  '/static/js/app.js',
-  '/static/manifest.json',
-  'https://cdn.bootcdn.net/ajax/libs/vue/3.4.21/vue.global.prod.min.js',
-];
-
-// Install: pre-cache static assets (NOT the root page)
-self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(ASSETS).catch(_ => {}))
-  );
+// Pulse Orange — 自毁式 Service Worker
+// 替代旧版 SW，自动注销自身 + 清缓存 + 强制刷新页面
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
-// Activate: clean old caches, claim all clients
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys => Promise.all(
-      keys.filter(k => k !== CACHE).map(k => caches.delete(k))
-    ))
-  );
-  self.clients.claim();
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    // 清空所有缓存
+    const keys = await caches.keys();
+    await Promise.all(keys.map(k => caches.delete(k)));
+    // 获取所有客户端，强制刷新
+    const clients = await self.clients.matchAll({ type: 'window' });
+    clients.forEach(c => c.navigate(c.url));
+    // 注销自己
+    await self.registration.unregister();
+    console.log('Pulse Orange SW: 旧缓存已清除，已注销');
+  })());
 });
 
-// Fetch: network-first for HTML, cache-first for static, stale-while-revalidate for API
-self.addEventListener('fetch', e => {
-  const url = new URL(e.request.url);
-  const dest = e.request.destination;
-
-  // HTML pages: always network-first
-  if (dest === 'document') {
-    e.respondWith(
-      fetch(e.request)
-        .then(r => {
-          const clone = r.clone();
-          caches.open(CACHE).then(c => c.put(e.request, clone));
-          return r;
-        })
-        .catch(() => caches.match(e.request))
-    );
-    return;
-  }
-
-  // API: stale-while-revalidate
-  if (url.pathname.startsWith('/api/')) {
-    e.respondWith(
-      fetch(e.request)
-        .then(r => {
-          const clone = r.clone();
-          caches.open(CACHE).then(c => c.put(e.request, clone));
-          return r;
-        })
-        .catch(() => caches.match(e.request))
-    );
-    return;
-  }
-
-  // Static assets: cache-first
-  e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request))
-  );
-});
+// 不拦截任何请求
+self.addEventListener('fetch', () => {});

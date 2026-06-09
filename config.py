@@ -71,25 +71,25 @@ FACTOR_REGISTRY = {
     "low":         {"category": "量价", "field": "low",         "description": "最低价",                        "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
     "volume":      {"category": "量价", "field": "volume",      "description": "成交量",                        "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
     "turnover":    {"category": "量价", "field": "turnover",    "description": "换手率",                        "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "pe_ttm":      {"category": "估值", "field": "pe_ttm",      "description": "市盈率TTM",                     "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "pb_ttm":      {"category": "估值", "field": "pb_ttm",      "description": "市净率TTM",                     "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "ps_ttm":      {"category": "估值", "field": "ps_ttm",      "description": "市销率TTM",                     "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "market_cap":  {"category": "估值", "field": "market_cap",  "description": "总市值",                        "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "dividend_yield": {"category": "估值", "field": "dividend_yield", "description": "股息率",                 "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "roe":         {"category": "质量", "field": "roe",         "description": "净资产收益率ROE",               "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "roa":         {"category": "质量", "field": "roa",         "description": "总资产收益率ROA",               "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "gross_profit_margin": {"category": "质量", "field": "gross_profit_margin", "description": "毛利率",    "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "net_profit_margin":   {"category": "质量", "field": "net_profit_margin",   "description": "净利率",    "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "revenue_yoy":    {"category": "成长", "field": "revenue_yoy",    "description": "营收同比增长率",          "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "net_profit_yoy": {"category": "成长", "field": "net_profit_yoy", "description": "净利润同比增长率",         "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
-    "eps_yoy":        {"category": "成长", "field": "eps_yoy",        "description": "每股收益同比增长率",       "formula": None, "weight": 1.0, "ic_30d": 0, "active": True},
+    "pe_ttm":      {"category": "估值", "field": "pe_ttm",      "description": "市盈率TTM",                     "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "pb_ttm":      {"category": "估值", "field": "pb_ttm",      "description": "市净率TTM",                     "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "ps_ttm":      {"category": "估值", "field": "ps_ttm",      "description": "市销率TTM",                     "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "market_cap":  {"category": "估值", "field": "market_cap",  "description": "总市值",                        "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "dividend_yield": {"category": "估值", "field": "dividend_yield", "description": "股息率",                 "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "roe":         {"category": "质量", "field": "roe",         "description": "净资产收益率ROE",               "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "roa":         {"category": "质量", "field": "roa",         "description": "总资产收益率ROA",               "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "gross_profit_margin": {"category": "质量", "field": "gross_profit_margin", "description": "毛利率",    "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "net_profit_margin":   {"category": "质量", "field": "net_profit_margin",   "description": "净利率",    "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "revenue_yoy":    {"category": "成长", "field": "revenue_yoy",    "description": "营收同比增长率",          "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "net_profit_yoy": {"category": "成长", "field": "net_profit_yoy", "description": "净利润同比增长率",         "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
+    "eps_yoy":        {"category": "成长", "field": "eps_yoy",        "description": "每股收益同比增长率",       "formula": None, "weight": 1.0, "ic_30d": 0, "active": False},
     "momentum_1m": {"category": "动量", "field": None, "description": "近1月涨跌幅",  "formula": "close / close.shift(21) - 1",          "weight": 1.0, "ic_30d": 0, "active": True},
-    "momentum_3m": {"category": "动量", "field": None, "description": "近3月涨跌幅",  "formula": "close / close.shift(63) - 1",          "weight": 1.0, "ic_30d": 0, "active": True},
-    "momentum_6m": {"category": "动量", "field": None, "description": "近6月涨跌幅",  "formula": "close / close.shift(126) - 1",         "weight": 1.0, "ic_30d": 0, "active": True},
-    "volatility_20d": {"category": "波动", "field": None, "description": "20日波动率", "formula": "returns.rolling(20).std()",              "weight": 1.0, "ic_30d": 0, "active": True},
+    "momentum_3m": {"category": "动量", "field": None, "description": "近3月涨跌幅",  "formula": "close / close.shift(63) - 1",          "weight": 1.0, "ic_30d": 0, "active": False},
+    "momentum_6m": {"category": "动量", "field": None, "description": "近6月涨跌幅",  "formula": "close / close.shift(126) - 1",         "weight": 1.0, "ic_30d": 0, "active": False},
+    "volatility_20d": {"category": "波动", "field": None, "description": "20日波动率", "formula": "returns.rolling(20).std()",              "weight": 1.0, "ic_30d": 0, "active": False},
     "amplitude_20d":  {"category": "波动", "field": None, "description": "20日均振幅", "formula": "(high/low-1).rolling(20).mean() * 100",   "weight": 1.0, "ic_30d": 0, "active": True},
     "volume_ratio_20": {"category": "资金", "field": None, "description": "20日量比",  "formula": "volume / volume.rolling(20).mean()",     "weight": 1.0, "ic_30d": 0, "active": True},
-    "money_flow_5d":   {"category": "资金", "field": None, "description": "5日资金流向", "formula": "(close*volume).diff(5) / (close.shift(5)*volume.shift(5))", "weight": 1.0, "ic_30d": 0, "active": True},
+    "money_flow_5d":   {"category": "资金", "field": None, "description": "5日资金流向", "formula": "(close*volume).diff(5) / (close.shift(5)*volume.shift(5))", "weight": 1.0, "ic_30d": 0, "active": False},
     # ===== 新增：技术指标因子 =====
     "rsi_14":          {"category": "技术", "field": None, "description": "14日RSI", "formula": "rsi(14)", "weight": 1.0, "ic_30d": 0, "active": True},
     "macd_dif":        {"category": "技术", "field": None, "description": "MACD快线", "formula": "ema(12)-ema(26)", "weight": 1.0, "ic_30d": 0, "active": True},
@@ -98,26 +98,26 @@ FACTOR_REGISTRY = {
     "atr_14":          {"category": "技术", "field": None, "description": "14日真实波幅", "formula": "tr.rolling(14).mean()/close", "weight": 1.0, "ic_30d": 0, "active": True},
     "ma5_slope":       {"category": "技术", "field": None, "description": "MA5斜率", "formula": "ma5/ma5.shift(5)-1", "weight": 1.0, "ic_30d": 0, "active": True},
     # ===== 新增：资金流向因子 =====
-    "north_flow_5d":   {"category": "资金", "field": None, "description": "5日北向资金变化", "formula": "north_flow.diff(5)", "weight": 1.0, "ic_30d": 0, "active": True},
-    "inst_ratio":      {"category": "资金", "field": None, "description": "机构持仓比例", "formula": "inst_holding/market_cap", "weight": 1.0, "ic_30d": 0, "active": True},
-    "margin_ratio":    {"category": "资金", "field": None, "description": "融资买入占比", "formula": "margin_buy/total_volume", "weight": 1.0, "ic_30d": 0, "active": True},
+    "north_flow_5d":   {"category": "资金", "field": None, "description": "5日北向资金变化", "formula": "north_flow.diff(5)", "weight": 1.0, "ic_30d": 0, "active": False},
+    "inst_ratio":      {"category": "资金", "field": None, "description": "机构持仓比例", "formula": "inst_holding/market_cap", "weight": 1.0, "ic_30d": 0, "active": False},
+    "margin_ratio":    {"category": "资金", "field": None, "description": "融资买入占比", "formula": "margin_buy/total_volume", "weight": 1.0, "ic_30d": 0, "active": False},
     # ===== 新增：风险调整因子 =====
-    "sharpe_20d":      {"category": "风险", "field": None, "description": "20日夏普比率", "formula": "returns.mean()/returns.std()*sqrt(252)", "weight": 1.0, "ic_30d": 0, "active": True},
-    "max_dd_60d":      {"category": "风险", "field": None, "description": "60日最大回撤", "formula": "min(cummax_return)", "weight": 1.0, "ic_30d": 0, "active": True},
-    "beta_60d":        {"category": "风险", "field": None, "description": "60日Beta系数", "formula": "cov(ret,idx_ret)/var(idx_ret)", "weight": 1.0, "ic_30d": 0, "active": True},
-    "alpha_20d":       {"category": "风险", "field": None, "description": "20日Alpha", "formula": "ret-rf-beta*(idx_ret-rf)", "weight": 1.0, "ic_30d": 0, "active": True},
-    "upside_vol_20d":  {"category": "风险", "field": None, "description": "上行波动率", "formula": "pos_returns.std()*sqrt(252)", "weight": 1.0, "ic_30d": 0, "active": True},
-    "downside_vol_20d":{"category": "风险", "field": None, "description": "下行波动率", "formula": "neg_returns.std()*sqrt(252)", "weight": 1.0, "ic_30d": 0, "active": True},
+    "sharpe_20d":      {"category": "风险", "field": None, "description": "20日夏普比率", "formula": "returns.mean()/returns.std()*sqrt(252)", "weight": 1.0, "ic_30d": 0, "active": False},
+    "max_dd_60d":      {"category": "风险", "field": None, "description": "60日最大回撤", "formula": "min(cummax_return)", "weight": 1.0, "ic_30d": 0, "active": False},
+    "beta_60d":        {"category": "风险", "field": None, "description": "60日Beta系数", "formula": "cov(ret,idx_ret)/var(idx_ret)", "weight": 1.0, "ic_30d": 0, "active": False},
+    "alpha_20d":       {"category": "风险", "field": None, "description": "20日Alpha", "formula": "ret-rf-beta*(idx_ret-rf)", "weight": 1.0, "ic_30d": 0, "active": False},
+    "upside_vol_20d":  {"category": "风险", "field": None, "description": "上行波动率", "formula": "pos_returns.std()*sqrt(252)", "weight": 1.0, "ic_30d": 0, "active": False},
+    "downside_vol_20d":{"category": "风险", "field": None, "description": "下行波动率", "formula": "neg_returns.std()*sqrt(252)", "weight": 1.0, "ic_30d": 0, "active": False},
     # ===== 新增：质量与成长因子 =====
-    "peg_ttm":         {"category": "质量", "field": None, "description": "PEG指标", "formula": "pe_ttm/net_profit_yoy", "weight": 1.0, "ic_30d": 0, "active": True},
-    "roe_5y_avg":      {"category": "质量", "field": None, "description": "5年平均ROE", "formula": "roe.rolling(5).mean()", "weight": 1.0, "ic_30d": 0, "active": True},
-    "accrual_ratio":   {"category": "质量", "field": None, "description": "应计利润比", "formula": "(net_income-cfo)/total_assets", "weight": 1.0, "ic_30d": 0, "active": True},
-    "revision_1m":     {"category": "情绪", "field": None, "description": "近1月盈利预测上调", "formula": "eps_est/eps_est.shift(21)-1", "weight": 1.0, "ic_30d": 0, "active": True},
+    "peg_ttm":         {"category": "质量", "field": None, "description": "PEG指标", "formula": "pe_ttm/net_profit_yoy", "weight": 1.0, "ic_30d": 0, "active": False},
+    "roe_5y_avg":      {"category": "质量", "field": None, "description": "5年平均ROE", "formula": "roe.rolling(5).mean()", "weight": 1.0, "ic_30d": 0, "active": False},
+    "accrual_ratio":   {"category": "质量", "field": None, "description": "应计利润比", "formula": "(net_income-cfo)/total_assets", "weight": 1.0, "ic_30d": 0, "active": False},
+    "revision_1m":     {"category": "情绪", "field": None, "description": "近1月盈利预测上调", "formula": "eps_est/eps_est.shift(21)-1", "weight": 1.0, "ic_30d": 0, "active": False},
     # ===== 新增：量价形态因子 =====
     "gap_ratio":       {"category": "量价", "field": None, "description": "跳空缺口比例", "formula": "(open-close.shift(1))/close.shift(1)", "weight": 1.0, "ic_30d": 0, "active": True},
     "volume_breakout": {"category": "量价", "field": None, "description": "放量突破信号", "formula": "volume/volume.rolling(20).mean()", "weight": 1.0, "ic_30d": 0, "active": True},
-    "consecutive_yang":{"category": "量价", "field": None, "description": "连阳天数", "formula": "count(close>open)", "weight": 1.0, "ic_30d": 0, "active": True},
-    "ma_convergence":  {"category": "量价", "field": None, "description": "均线粘合度", "formula": "1-std(ma5,ma10,ma20)/mean(ma5,ma10,ma20)", "weight": 1.0, "ic_30d": 0, "active": True},
+    "consecutive_yang":{"category": "量价", "field": None, "description": "连阳天数", "formula": "(close>open).sum()", "weight": 1.0, "ic_30d": 0, "active": True},
+    "ma_convergence":  {"category": "量价", "field": None, "description": "均线粘合度", "formula": "1 - ((ma5-ma10).abs() + (ma10-ma20).abs()) / (ma20*2)", "weight": 1.0, "ic_30d": 0, "active": True},
     # ===== 统计套利因子 =====
     "cointegration":   {"category": "统计套利", "field": None, "description": "协整配对均值回归", "formula": None, "weight": 1.2, "ic_30d": 0, "active": True},
     # ===== AL Brooks 价格行为因子 =====
@@ -153,6 +153,9 @@ def load_registry():
                 FACTOR_REGISTRY[k].update(v)
             else:
                 FACTOR_REGISTRY[k] = v
+            # 同步到DYNAMIC_FACTORS（GP因子）
+            if v.get('category') == 'GP挖掘' and v.get('formula'):
+                DYNAMIC_FACTORS[k] = v['formula']
 
 
 def save_registry():

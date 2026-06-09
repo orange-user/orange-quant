@@ -27,6 +27,8 @@ except NameError:
 from data import *
 from data import _get_pool_snapshot
 from engine import *
+from lhb_strategy import generate_signals, fetch_lhb_data, get_today_signals, save_daily_signals
+from alpha_factory import run_pipeline
 
 # Try loading AI services
 try:
@@ -2188,6 +2190,55 @@ def ruflo_committee():
     except Exception as e:
         return jsonify({'available': False, 'error': str(e)})
 
+# ==================== OpenClaw微信推送 ====================
+
+@app.route('/api/push-wechat', methods=['POST'])
+def push_wechat():
+    """HTTP推送微信：接收信号文本 → 调用openclaw推送微信"""
+    token = request.headers.get('X-Deploy-Token', '')
+    if token != DEPLOY_TOKEN:
+        return jsonify({'error': '令牌错误'}), 403
+
+    data = request.get_json(silent=True)
+    if not data or 'message' not in data:
+        return jsonify({'error': '缺少message字段'}), 400
+
+    message = data['message']
+
+    # 写入 planet_post_today.txt（兼容旧cron机制）
+    try:
+        post_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'planet_post_today.txt')
+        os.makedirs(os.path.dirname(post_file), exist_ok=True)
+        with open(post_file, 'w', encoding='utf-8') as f:
+            f.write(message + '\n')
+    except Exception as e:
+        app.logger.warning(f'写入planet_post失败: {e}')
+
+    # 调用 openclaw CLI 推送微信
+    pushed = False
+    push_error = ''
+    try:
+        r = subprocess.run(
+            ['/usr/bin/openclaw', 'message', 'send',
+             '--channel', 'openclaw-weixin',
+             '--target', 'o9cq806Txs-nk16DWQsEQP347mY4@im.wechat',
+             '--message', message],
+            timeout=15, capture_output=True, text=True
+        )
+        pushed = r.returncode == 0
+        if not pushed:
+            push_error = (r.stderr or r.stdout or '')[:200]
+            app.logger.warning(f'openclaw推送失败: {push_error}')
+    except FileNotFoundError:
+        push_error = 'openclaw CLI不存在'
+        app.logger.info(push_error)
+    except Exception as e:
+        push_error = str(e)[:200]
+        app.logger.warning(f'openclaw异常: {push_error}')
+
+    return jsonify({'ok': True, 'pushed': pushed, 'push_error': push_error})
+
+
 # ==================== HTTP部署接口 ====================
 
 @app.route('/api/deploy', methods=['POST'])
@@ -2262,8 +2313,7 @@ def deploy_api():
     f = request.files['file']
     filename = f.filename or ''
     allowed = ['engine.py', 'app.py', 'config.py', 'ai_service.py',
-               '_pattern_recognition.py', '_sector_heat.py', 'stop_management.py',
-               'data.py', 'scraper.py', 'wechat_bot.py']
+               '_sector_heat.py', 'data.py', 'scraper.py', 'wechat_bot.py']
 
     if filename not in allowed:
         return jsonify({'error': f'不允许的文件: {filename}，接受: {allowed}'}), 400
@@ -2289,6 +2339,127 @@ def deploy_api():
             return jsonify({'error': f'重启失败: {e}'}), 500
 
     return jsonify({'ok': True, 'message': msg})
+
+
+
+@app.route('/api/alpha/signals')
+def api_alpha_signals():
+    """AI模型信号"""
+    import pickle, os
+    from config import DATA_DIR
+    model_path = os.path.join(DATA_DIR, 'alpha_model.pkl')
+    if os.path.exists(model_path):
+        with open(model_path, 'rb') as f:
+            model_data = pickle.load(f)
+        from alpha_factory import fetch_lhb, fetch_zt_pool, build_features, predict_today
+        lhb = fetch_lhb(10)
+        zt = fetch_zt_pool()
+        features = build_features(lhb, zt)
+        signals = predict_today(model_data, features)
+        return jsonify({'signals': signals, 'count': len(signals), 'accuracy': model_data.get('accuracy', 0)})
+    return jsonify({'signals': [], 'count': 0, 'error': '模型未训练'})
+
+@app.route('/api/alpha/train')
+def api_alpha_train():
+    """训练模型"""
+    result = run_pipeline(90)
+    if 'error' in result:
+        return jsonify({'status': 'error', 'msg': result['error']})
+    m = result['model']
+    return jsonify({
+        'status': 'ok',
+        'accuracy': m.get('accuracy', 0),
+        'n_train': m.get('n_train', 0),
+        'signals': result.get('signals', [])[:5],
+    })
+
+
+
+# ==================== 橙卫AI 看板 ====================
+
+@app.route('/og/dashboard')
+def og_dashboard():
+    """橙卫AI 绩效看板"""
+    # 读取模拟盘记录
+    sim_path = os.path.join(DATA_DIR, 'og_sim_log.jsonl')
+    trades = []
+    if os.path.exists(sim_path):
+        with open(sim_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    trades.append(json.loads(line))
+    
+    completed = [t for t in trades if t.get('pnl') is not None]
+    stats = {
+        'total': len(trades),
+        'completed': len(completed),
+        'win_rate': 0,
+        'total_pnl': 0,
+        'max_drawdown': 0,
+    }
+    OG_CAPITAL = 10000
+    if completed:
+        pnls = [t['pnl'] for t in completed]
+        stats['win_rate'] = round(sum(1 for p in pnls if p>0)/len(pnls)*100, 1)
+        stats['total_pnl'] = round(sum(pnls), 2)
+        equity = [OG_CAPITAL]
+        for p in pnls:
+            equity.append(equity[-1] + p)
+        eq = pd.Series(equity[1:])
+        dd = (eq / eq.cummax() - 1).min() * 100
+        stats['max_drawdown'] = round(dd, 2)
+        stats['final_equity'] = round(equity[-1], 2)
+    else:
+        stats['final_equity'] = OG_CAPITAL
+    
+    # 今日信号
+    today_signals = [t for t in trades if t.get('entry_price') is None]
+    
+    return jsonify({
+        'stats': stats,
+        'today_signals': today_signals[:5],
+        'recent_trades': sorted(completed, key=lambda x: x.get('date',''), reverse=True)[:20],
+    })
+
+@app.route('/og/signals')
+def og_signals():
+    """今日信号 (纯文本, 适合微信)"""
+    from scripts.daily_og import fetch_signals, load_model
+    model_data = load_model()
+    signals = fetch_signals(model_data)
+    if signals:
+        lines = [f"{s['code']} {s['name']} {s['proba']:.0%} 净买{s['nb_ratio']}%" for s in signals]
+        return jsonify({'signals': signals, 'text': chr(10).join(lines)})
+    return jsonify({'signals': [], 'text': '今日无信号'})
+
+# ==================== LHB龙虎榜跟庄 ====================
+
+@app.route('/api/lhb/signals')
+def api_lhb_signals():
+    """获取龙虎榜信号"""
+    signals = get_today_signals()
+    if not signals:
+        df = fetch_lhb_data(3)
+        if df is not None:
+            signals = generate_signals(df)
+    return jsonify({'signals': signals[:10], 'count': len(signals)})
+
+@app.route('/api/lhb/refresh')
+def api_lhb_refresh():
+    """刷新龙虎榜数据"""
+    try:
+        signals = save_daily_signals()
+        return jsonify({'status': 'ok', 'count': len(signals)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'msg': str(e)})
+
+@app.route('/api/lhb/backtest')
+def api_lhb_backtest():
+    """龙虎榜回测结果"""
+    from lhb_strategy import verify_backtest
+    result = verify_backtest(60)
+    return jsonify(result)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
